@@ -1,0 +1,14 @@
+{
+  "packets": 7025,
+  "duration_s": 3.1044959999999264,
+  "pps": 2262.8471739052543,
+  "avg_pkt_size": 0.0,
+  "proto_dist": {
+    "TCP": 7025
+  },
+  "src_ip_entropy": 0.0,
+  "syn_count": 1172,
+  "ack_count": 6439,
+  "syn_ack_ratio": 0.18201584096909457,
+  "pcap": "http_flood_fixed.pcap"
+}

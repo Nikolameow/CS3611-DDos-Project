@@ -1,0 +1,58 @@
+[
+  {
+    "packets": 7025,
+    "duration_s": 3.1044959999999264,
+    "pps": 2262.8471739052543,
+    "avg_pkt_size": 0.0,
+    "proto_dist": {
+      "TCP": 7025
+    },
+    "src_ip_entropy": 0.0,
+    "syn_count": 1172,
+    "ack_count": 6439,
+    "syn_ack_ratio": 0.18201584096909457,
+    "pcap": "http_flood.pcap"
+  },
+  {
+    "packets": 7025,
+    "duration_s": 3.1044959999999264,
+    "pps": 2262.8471739052543,
+    "avg_pkt_size": 0.0,
+    "proto_dist": {
+      "TCP": 7025
+    },
+    "src_ip_entropy": 0.0,
+    "syn_count": 1172,
+    "ack_count": 6439,
+    "syn_ack_ratio": 0.18201584096909457,
+    "pcap": "http_flood_fixed.pcap"
+  },
+  {
+    "packets": 20,
+    "duration_s": 0.0019000000029336661,
+    "pps": 10526.315773220686,
+    "avg_pkt_size": 0.0,
+    "proto_dist": {
+      "TCP": 20
+    },
+    "src_ip_entropy": 4.321928094887363,
+    "syn_count": 20,
+    "ack_count": 0,
+    "syn_ack_ratio": null,
+    "pcap": "syn_spoof_test.pcap"
+  },
+  {
+    "packets": 40,
+    "duration_s": 0.0019500000053085387,
+    "pps": 20512.820456977897,
+    "avg_pkt_size": 0.0,
+    "proto_dist": {
+      "OTHER": 40
+    },
+    "src_ip_entropy": 3.1609640474436795,
+    "syn_count": 0,
+    "ack_count": 0,
+    "syn_ack_ratio": null,
+    "pcap": "udp_reflect_spoof_test.pcap"
+  }
+]

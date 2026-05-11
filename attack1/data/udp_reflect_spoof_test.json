@@ -1,0 +1,14 @@
+{
+  "packets": 40,
+  "duration_s": 0.0019500000053085387,
+  "pps": 20512.820456977897,
+  "avg_pkt_size": 0.0,
+  "proto_dist": {
+    "OTHER": 40
+  },
+  "src_ip_entropy": 3.1609640474436795,
+  "syn_count": 0,
+  "ack_count": 0,
+  "syn_ack_ratio": null,
+  "pcap": "udp_reflect_spoof_test.pcap"
+}

@@ -1,0 +1,14 @@
+{
+  "packets": 20,
+  "duration_s": 0.0019000000029336661,
+  "pps": 10526.315773220686,
+  "avg_pkt_size": 0.0,
+  "proto_dist": {
+    "TCP": 20
+  },
+  "src_ip_entropy": 4.321928094887363,
+  "syn_count": 20,
+  "ack_count": 0,
+  "syn_ack_ratio": null,
+  "pcap": "syn_spoof_test.pcap"
+}

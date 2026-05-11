@@ -1,0 +1,2 @@
+# Optional dependencies (the project works without these for HTTP load generation)
+scapy>=2.5.0
