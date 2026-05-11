@@ -2,4 +2,6 @@
 *.pdf
 *.aux
 *.log
+*.out
+*.synctex.gz
 .vscode/
