@@ -123,7 +123,7 @@ def _cmd_syn(args: argparse.Namespace) -> int:
     )
     metrics = asyncio.run(run_syn_flood(cfg))
     summary = summarize_latencies_ms(metrics.latencies_ms)
-    print("--- syn flood-style summary ---")
+    print("--- tcp connection flood-style summary ---")
     print(f"sent={metrics.sent} ok={metrics.ok} errors={metrics.errors} timeouts={metrics.timeouts}")
     print(f"elapsed_s={metrics.elapsed_s():.2f} rps={metrics.rps():.1f}")
     if summary:
@@ -247,7 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--pcap", default="/tmp/attack_sim_loopback.pcap")
     c.set_defaults(_fn=_cmd_capture_http)
 
-    t = sub.add_parser("syn", help="Generate local-only TCP connection flood to localhost")
+    t = sub.add_parser("syn", help="Generate local-only TCP connection flood to localhost (not raw SYN packets)")
     t.add_argument("--host", default="127.0.0.1")
     t.add_argument("--port", type=int, default=8080)
     t.add_argument("--duration", type=float, default=10.0)
