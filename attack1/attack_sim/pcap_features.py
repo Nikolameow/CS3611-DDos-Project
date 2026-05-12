@@ -119,7 +119,7 @@ def _parse_tshark_rows(rows: list[str]) -> PcapStats:
         return 1 if v in {"1", "true", "yes"} else 0
 
     for line in rows:
-        # epoch\tlen\tip.src\tip.proto\ttcp.flags.syn\ttcp.flags.ack
+        # epoch\tlen\tip.src\tip.proto\ttcp.flags.syn\ttcp.flags.ack\tframe.protocols
         parts = line.split("\t")
         if len(parts) < 6:
             continue
@@ -133,12 +133,19 @@ def _parse_tshark_rows(rows: list[str]) -> PcapStats:
         ip_proto = parts[3]
         syn = _to_bool_int(parts[4])
         ack = _to_bool_int(parts[5])
+        frame_protocols = parts[6].lower() if len(parts) > 6 else ""
 
         if ip_proto == "6":
             l4 = "TCP"
         elif ip_proto == "17":
             l4 = "UDP"
         elif ip_proto == "1":
+            l4 = "ICMP"
+        elif "tcp" in frame_protocols:
+            l4 = "TCP"
+        elif "udp" in frame_protocols:
+            l4 = "UDP"
+        elif "icmp" in frame_protocols:
             l4 = "ICMP"
         elif ip_proto:
             l4 = f"IP({ip_proto})"
@@ -254,6 +261,7 @@ def extract_pcap_features(pcap_path: str | Path, *, max_packets: int | None = No
         raise FileNotFoundError(str(pcap))
 
     proc = None
+    tshark_error: str | None = None
     tshark = shutil.which("tshark")
     if tshark:
         cmd = [
@@ -276,6 +284,8 @@ def extract_pcap_features(pcap_path: str | Path, *, max_packets: int | None = No
             "tcp.flags.syn",
             "-e",
             "tcp.flags.ack",
+            "-e",
+            "frame.protocols",
         ]
         if max_packets is not None and max_packets > 0:
             cmd.extend(["-c", str(max_packets)])
@@ -284,8 +294,73 @@ def extract_pcap_features(pcap_path: str | Path, *, max_packets: int | None = No
     if proc is not None and proc.returncode == 0:
         rows = [ln for ln in proc.stdout.splitlines() if ln.strip()]
         return _parse_tshark_rows(rows)
+    if proc is not None:
+        tshark_error = proc.stderr.strip() or f"tshark exited with code {proc.returncode}"
 
-    # If tshark fails due to file permission or environment, fall back to tcpdump output parsing.
+    # Prefer scapy for the fallback because it handles RAW-IP PCAPs more reliably
+    # than tcpdump text parsing and works on Windows without external tools.
+    try:
+        from scapy.layers.inet import IP, TCP, UDP, ICMP  # type: ignore
+        from scapy.utils import PcapReader  # type: ignore
+    except Exception:
+        IP = TCP = UDP = ICMP = PcapReader = None  # type: ignore[assignment]
+
+    if PcapReader is not None:
+        times: list[float] = []
+        sizes: list[int] = []
+        l4_protos: list[str] = []
+        src_ips: list[str] = []
+        syn_flags: list[int] = []
+        ack_flags: list[int] = []
+
+        with PcapReader(str(pcap)) as reader:
+            for i, pkt in enumerate(reader):
+                if max_packets is not None and max_packets > 0 and i >= max_packets:
+                    break
+
+                try:
+                    times.append(float(pkt.time))
+                except Exception:
+                    continue
+
+                try:
+                    sizes.append(int(len(pkt)))
+                except Exception:
+                    sizes.append(0)
+
+                if IP in pkt:
+                    src_ips.append(str(pkt[IP].src))
+                else:
+                    src_ips.append("")
+
+                if TCP in pkt:
+                    l4_protos.append("TCP")
+                    flags = int(pkt[TCP].flags)
+                    syn_flags.append(1 if (flags & 0x02) else 0)
+                    ack_flags.append(1 if (flags & 0x10) else 0)
+                elif UDP in pkt:
+                    l4_protos.append("UDP")
+                    syn_flags.append(0)
+                    ack_flags.append(0)
+                elif ICMP in pkt:
+                    l4_protos.append("ICMP")
+                    syn_flags.append(0)
+                    ack_flags.append(0)
+                else:
+                    l4_protos.append("OTHER")
+                    syn_flags.append(0)
+                    ack_flags.append(0)
+
+        return _compute_stats(
+            times=times,
+            sizes=sizes,
+            l4_protos=l4_protos,
+            src_ips=src_ips,
+            syn_flags=syn_flags,
+            ack_flags=ack_flags,
+        )
+
+    # Final fallback: parse tcpdump text output if available.
     tcpdump = shutil.which("tcpdump")
     if tcpdump:
         proc2 = subprocess.run(
@@ -298,72 +373,10 @@ def extract_pcap_features(pcap_path: str | Path, *, max_packets: int | None = No
             rows = [ln for ln in proc2.stdout.splitlines() if ln.strip()]
             return _parse_tcpdump_rows(rows)
 
-    if proc.returncode != 0:
-        raise RuntimeError(f"tshark failed: {proc.stderr.strip()}")
-
-    # Fallback to scapy
-    try:
-        from scapy.layers.inet import IP, TCP, UDP, ICMP  # type: ignore
-        from scapy.utils import PcapReader  # type: ignore
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "Neither 'tshark' nor 'tcpdump' nor 'scapy' is available. Install one of them: "
-            "(1) sudo apt install tshark tcpdump   OR   (2) pip install scapy"
-        ) from exc
-
-    times: list[float] = []
-    sizes: list[int] = []
-    l4_protos: list[str] = []
-    src_ips: list[str] = []
-    syn_flags: list[int] = []
-    ack_flags: list[int] = []
-
-    with PcapReader(str(pcap)) as reader:
-        for i, pkt in enumerate(reader):
-            if max_packets is not None and max_packets > 0 and i >= max_packets:
-                break
-
-            try:
-                times.append(float(pkt.time))
-            except Exception:
-                continue
-
-            try:
-                sizes.append(int(len(pkt)))
-            except Exception:
-                sizes.append(0)
-
-            if IP in pkt:
-                src_ips.append(str(pkt[IP].src))
-            else:
-                src_ips.append("")
-
-            if TCP in pkt:
-                l4_protos.append("TCP")
-                flags = int(pkt[TCP].flags)
-                syn_flags.append(1 if (flags & 0x02) else 0)
-                ack_flags.append(1 if (flags & 0x10) else 0)
-            elif UDP in pkt:
-                l4_protos.append("UDP")
-                syn_flags.append(0)
-                ack_flags.append(0)
-            elif ICMP in pkt:
-                l4_protos.append("ICMP")
-                syn_flags.append(0)
-                ack_flags.append(0)
-            else:
-                l4_protos.append("OTHER")
-                syn_flags.append(0)
-                ack_flags.append(0)
-
-    return _compute_stats(
-        times=times,
-        sizes=sizes,
-        l4_protos=l4_protos,
-        src_ips=src_ips,
-        syn_flags=syn_flags,
-        ack_flags=ack_flags,
-    )
+    tool_msg = "Install one of: tshark, scapy, or tcpdump."
+    if tshark_error:
+        raise RuntimeError(f"tshark failed: {tshark_error}. {tool_msg}")
+    raise RuntimeError(f"No supported PCAP parser is available. {tool_msg}")
 
 
 def format_human(stats: PcapStats) -> str:

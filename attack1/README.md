@@ -46,6 +46,8 @@ python3 -m attack_sim http --url http://127.0.0.1:8080/ --method POST --body "he
 python3 -m attack_sim syn --host 127.0.0.1 --port 8080 --duration 10 --concurrency 100 --rate 500
 ```
 
+This mode opens many short-lived TCP connections. It is useful for connection churn and backlog pressure testing, but it is not a raw SYN packet generator.
+
 5) Simulate a local UDP reflector/amplifier pattern:
 
 ```bash
