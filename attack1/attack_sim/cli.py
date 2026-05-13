@@ -9,6 +9,22 @@ from .defense import apply_commands, build_iptables_blacklist, build_iptables_ra
 from .auto_block import AutoBlockConfig, AutoBlocker
 from .http_load import HttpLoadConfig, run_http_load
 from .metrics import summarize_latencies_ms
+
+
+def _parse_csv(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _parse_size_range(value: str | None) -> tuple[int, int] | None:
+    if value is None:
+        return None
+    sep = "," if "," in value else "-"
+    parts = [item.strip() for item in value.split(sep, 1)]
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("body size range must be MIN,MAX or MIN-MAX")
+    return int(parts[0]), int(parts[1])
 from .pcap_features import extract_pcap_features, format_human, format_json
 from .pcap_synth import (
     ReflectPcapConfig,
@@ -35,7 +51,14 @@ def _cmd_http(args: argparse.Namespace) -> int:
         rate=args.rate,
         timeout_s=args.timeout,
         keepalive=args.keepalive,
+        path=args.path,
+        paths=_parse_csv(args.paths),
         body=body,
+        body_size_range=_parse_size_range(args.body_size_range),
+        post_ratio=args.post_ratio,
+        user_agents=_parse_csv(args.user_agents),
+        jitter_ms=args.jitter_ms,
+        randomize_requests=args.randomize,
         content_type=args.content_type,
     )
 
@@ -67,6 +90,52 @@ def _cmd_pcap_features(args: argparse.Namespace) -> int:
         print(format_json(stats))
     else:
         print(format_human(stats))
+    return 0
+
+
+def _cmd_normal_http(args: argparse.Namespace) -> int:
+    paths = _parse_csv(args.paths) or ["/", "/status", "/api/v1/data", "/search?q=test", "/login", "/submit"]
+    user_agents = _parse_csv(args.user_agents) or [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+        "curl/7.85.0",
+        "Python/3.11 aiohttp",
+    ]
+    cfg = HttpLoadConfig(
+        url=args.url,
+        duration_s=args.duration,
+        concurrency=args.concurrency,
+        rate=args.rate,
+        timeout_s=args.timeout,
+        keepalive=args.keepalive,
+        paths=paths,
+        body_size_range=_parse_size_range(args.body_size_range) or (0, args.max_body_size),
+        post_ratio=args.post_ratio,
+        user_agents=user_agents,
+        jitter_ms=args.jitter_ms,
+        randomize_requests=True,
+        content_type=args.content_type,
+    )
+
+    metrics = asyncio.run(run_http_load(cfg))
+    summary = summarize_latencies_ms(metrics.latencies_ms)
+
+    print("--- normal traffic run summary ---")
+    print(f"sent={metrics.sent} ok={metrics.ok} errors={metrics.errors} timeouts={metrics.timeouts}")
+    print(f"elapsed_s={metrics.elapsed_s():.2f} rps={metrics.rps():.1f}")
+    if summary:
+        print(
+            "lat_ms="
+            + " ".join(
+                [
+                    f"avg:{summary['avg']:.2f}",
+                    f"p50:{summary['p50']:.2f}",
+                    f"p95:{summary['p95']:.2f}",
+                    f"p99:{summary['p99']:.2f}",
+                    f"max:{summary['max']:.2f}",
+                ]
+            )
+        )
     return 0
 
 
@@ -221,15 +290,38 @@ def build_parser() -> argparse.ArgumentParser:
 
     h = sub.add_parser("http", help="Generate local-only HTTP load")
     h.add_argument("--url", required=True, help="Must be http://localhost/127.0.0.1/::1")
+    h.add_argument("--path", default=None, help="Optional request path override")
+    h.add_argument("--paths", default=None, help="Comma-separated list of URL paths to randomize")
     h.add_argument("--method", choices=["GET", "POST"], default="GET")
+    h.add_argument("--post-ratio", type=float, default=0.0, help="Fraction of randomized requests to use POST")
+    h.add_argument("--body", default=None)
+    h.add_argument("--body-size-range", default=None, help="Random request body size range, e.g. 0,128 or 0-128")
+    h.add_argument("--user-agents", default=None, help="Comma-separated list of User-Agent values to rotate")
+    h.add_argument("--jitter-ms", type=float, default=0.0, help="Add random jitter between requests")
+    h.add_argument("--randomize", action="store_true", help="Randomize request path/method/body/user-agent per request")
     h.add_argument("--duration", type=float, default=10.0)
     h.add_argument("--concurrency", type=int, default=10)
     h.add_argument("--rate", type=float, default=50.0, help="Requests/sec overall; set <=0 for unthrottled")
     h.add_argument("--timeout", type=float, default=2.0)
     h.add_argument("--keepalive", action="store_true")
-    h.add_argument("--body", default=None)
     h.add_argument("--content-type", default="text/plain")
     h.set_defaults(_fn=_cmd_http)
+
+    n = sub.add_parser("normal-http", help="Generate benign-style HTTP traffic for mixed flow datasets")
+    n.add_argument("--url", required=True, help="Must be http://localhost/127.0.0.1/::1")
+    n.add_argument("--paths", default=None, help="Comma-separated list of normal URL paths")
+    n.add_argument("--duration", type=float, default=10.0)
+    n.add_argument("--concurrency", type=int, default=10)
+    n.add_argument("--rate", type=float, default=20.0, help="Requests/sec overall; set <=0 for unthrottled")
+    n.add_argument("--timeout", type=float, default=2.0)
+    n.add_argument("--keepalive", action="store_true")
+    n.add_argument("--post-ratio", type=float, default=0.2, help="Fraction of requests that use POST")
+    n.add_argument("--body-size-range", default=None, help="Random benign request body size range, e.g. 0,256")
+    n.add_argument("--max-body-size", type=int, default=256, help="Maximum random body size when no explicit range is provided")
+    n.add_argument("--user-agents", default=None, help="Comma-separated list of User-Agent values to rotate")
+    n.add_argument("--jitter-ms", type=float, default=25.0, help="Add random jitter between benign requests")
+    n.add_argument("--content-type", default="text/plain")
+    n.set_defaults(_fn=_cmd_normal_http)
 
     f = sub.add_parser("pcap-features", help="Extract PPS/protocol/IP-entropy/SYN-ACK stats from a PCAP")
     f.add_argument("--pcap", required=True, help="Path to .pcap/.pcapng")

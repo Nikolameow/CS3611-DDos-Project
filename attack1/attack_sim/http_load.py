@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from dataclasses import dataclass
 from typing import Literal, Optional
@@ -22,7 +23,13 @@ class HttpLoadConfig:
     timeout_s: float = 2.0
     keepalive: bool = False
     path: str | None = None
+    paths: list[str] | None = None
     body: bytes | None = None
+    body_size_range: tuple[int, int] | None = None
+    post_ratio: float = 0.0
+    user_agents: list[str] | None = None
+    jitter_ms: float = 0.0
+    randomize_requests: bool = False
     content_type: str = "application/octet-stream"
 
 
@@ -111,6 +118,7 @@ def _build_request(
     body: bytes | None,
     content_type: str,
     keepalive: bool,
+    user_agent: str,
 ) -> bytes:
     if not path.startswith("/"):
         path = "/" + path
@@ -118,7 +126,7 @@ def _build_request(
     lines: list[bytes] = []
     lines.append(f"{method} {path} HTTP/1.1".encode())
     lines.append(f"Host: {host}".encode())
-    lines.append(b"User-Agent: attack-sim-local/1.0")
+    lines.append(f"User-Agent: {user_agent}".encode())
     lines.append(b"Accept: */*")
     lines.append(b"Connection: keep-alive" if keepalive else b"Connection: close")
 
@@ -130,6 +138,49 @@ def _build_request(
     if body is not None:
         raw += body
     return raw
+
+
+def _random_body(size: int) -> bytes:
+    return bytes(
+        random.choice(b"abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(size)
+    )
+
+
+def _choose_path(cfg: HttpLoadConfig, default_path: str = "/") -> str:
+    if cfg.paths:
+        return random.choice(cfg.paths)
+    if cfg.path:
+        return cfg.path
+    return default_path or "/"
+
+
+def _choose_method(cfg: HttpLoadConfig) -> Method:
+    if cfg.randomize_requests and cfg.post_ratio > 0:
+        return "POST" if random.random() < cfg.post_ratio else "GET"
+    return cfg.method
+
+
+def _choose_body(cfg: HttpLoadConfig, method: Method) -> bytes | None:
+    if cfg.body is not None and not cfg.randomize_requests:
+        return cfg.body
+
+    if method == "POST":
+        if cfg.body is not None:
+            return cfg.body
+        if cfg.body_size_range is not None:
+            lo, hi = cfg.body_size_range
+            if lo > hi:
+                lo, hi = hi, lo
+            size = random.randint(lo, hi)
+            return _random_body(size)
+        return b""
+    return None
+
+
+def _choose_user_agent(cfg: HttpLoadConfig) -> str:
+    if cfg.user_agents:
+        return random.choice(cfg.user_agents)
+    return "attack-sim-local/1.0"
 
 
 async def _single_request(
@@ -158,17 +209,31 @@ async def _per_request_worker(
     *,
     host: str,
     port: int,
-    request_bytes: bytes,
+    cfg: HttpLoadConfig,
+    request_bytes: bytes | None,
     timeout_s: float,
     stop_evt: asyncio.Event,
     limiter: _RateLimiter | None,
     metrics: RunMetrics,
+    default_path: str,
 ) -> None:
     while not stop_evt.is_set():
         if limiter is not None:
             await limiter.acquire()
         t0 = time.perf_counter()
         try:
+            if cfg.randomize_requests:
+                method = _choose_method(cfg)
+                request_bytes = _build_request(
+                    host=host,
+                    path=_choose_path(cfg, default_path),
+                    method=method,
+                    body=_choose_body(cfg, method),
+                    content_type=cfg.content_type,
+                    keepalive=cfg.keepalive,
+                    user_agent=_choose_user_agent(cfg),
+                )
+            assert request_bytes is not None
             status = await _single_request(host, port, request_bytes, timeout_s)
             latency_ms = (time.perf_counter() - t0) * 1000.0
             if 200 <= status < 500:
@@ -179,17 +244,21 @@ async def _per_request_worker(
             metrics.record_timeout()
         except Exception:
             metrics.record_error()
+        if cfg.jitter_ms > 0 and not stop_evt.is_set():
+            await asyncio.sleep(random.uniform(0.0, cfg.jitter_ms / 1000.0))
 
 
 async def _keepalive_worker(
     *,
     host: str,
     port: int,
-    request_bytes: bytes,
+    cfg: HttpLoadConfig,
+    request_bytes: bytes | None,
     timeout_s: float,
     stop_evt: asyncio.Event,
     limiter: _RateLimiter | None,
     metrics: RunMetrics,
+    default_path: str,
 ) -> None:
     reader: asyncio.StreamReader | None = None
     writer: asyncio.StreamWriter | None = None
@@ -215,6 +284,18 @@ async def _keepalive_worker(
             t0 = time.perf_counter()
             try:
                 assert writer is not None and reader is not None
+                if cfg.randomize_requests:
+                    method = _choose_method(cfg)
+                    request_bytes = _build_request(
+                        host=host,
+                        path=_choose_path(cfg, default_path),
+                        method=method,
+                        body=_choose_body(cfg, method),
+                        content_type=cfg.content_type,
+                        keepalive=cfg.keepalive,
+                        user_agent=_choose_user_agent(cfg),
+                    )
+                assert request_bytes is not None
                 writer.write(request_bytes)
                 await asyncio.wait_for(writer.drain(), timeout=timeout_s)
                 status = await asyncio.wait_for(_read_http_response(reader), timeout=timeout_s)
@@ -235,6 +316,8 @@ async def _keepalive_worker(
                 metrics.record_error()
                 await _close()
                 reader, writer = await _connect()
+            if cfg.jitter_ms > 0 and not stop_evt.is_set():
+                await asyncio.sleep(random.uniform(0.0, cfg.jitter_ms / 1000.0))
     finally:
         await _close()
 
@@ -248,39 +331,54 @@ async def run_http_load(cfg: HttpLoadConfig) -> RunMetrics:
         raise ValueError("duration_s must be > 0")
 
     parsed = ensure_loopback_url(cfg.url)
-    host = parsed.hostname or "localhost"
+    host = parsed.hostname
     port = parsed.port or 80
-    path = cfg.path or (parsed.path if parsed.path else "/")
-
     limiter = _RateLimiter(cfg.rate) if (cfg.rate is not None and cfg.rate > 0) else None
-
-    request_bytes = _build_request(
-        host=host,
-        path=path,
-        method=cfg.method,
-        body=cfg.body,
-        content_type=cfg.content_type,
-        keepalive=cfg.keepalive,
-    )
-
     metrics = RunMetrics()
     stop_evt = asyncio.Event()
+
+    default_path = cfg.path or (parsed.path if parsed.path else "/")
+    if cfg.randomize_requests:
+        request_bytes = None
+    else:
+        request_bytes = _build_request(
+            host=host,
+            path=_choose_path(cfg, default_path),
+            method=_choose_method(cfg),
+            body=_choose_body(cfg, cfg.method),
+            content_type=cfg.content_type,
+            keepalive=cfg.keepalive,
+            user_agent=_choose_user_agent(cfg),
+        )
 
     async def _stopper() -> None:
         await asyncio.sleep(cfg.duration_s)
         stop_evt.set()
 
-    worker_fn = _keepalive_worker if cfg.keepalive else _per_request_worker
     workers = [
         asyncio.create_task(
-            worker_fn(
+            _keepalive_worker(
                 host=host,
                 port=port,
+                cfg=cfg,
                 request_bytes=request_bytes,
                 timeout_s=cfg.timeout_s,
                 stop_evt=stop_evt,
                 limiter=limiter,
                 metrics=metrics,
+                default_path=default_path,
+            )
+            if cfg.keepalive
+            else _per_request_worker(
+                host=host,
+                port=port,
+                cfg=cfg,
+                request_bytes=request_bytes,
+                timeout_s=cfg.timeout_s,
+                stop_evt=stop_evt,
+                limiter=limiter,
+                metrics=metrics,
+                default_path=default_path,
             )
         )
         for _ in range(cfg.concurrency)
@@ -291,8 +389,8 @@ async def run_http_load(cfg: HttpLoadConfig) -> RunMetrics:
         await asyncio.gather(*workers, stopper)
     finally:
         stop_evt.set()
-        for t in workers:
-            t.cancel()
+        for task in workers:
+            task.cancel()
         await asyncio.gather(*workers, return_exceptions=True)
         await asyncio.gather(stopper, return_exceptions=True)
 

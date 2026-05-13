@@ -28,6 +28,18 @@ cd /home/leo/ddos
 python3 -m attack_sim http --url http://127.0.0.1:8080/ --duration 10 --concurrency 20 --rate 200
 ```
 
+For diversified attack-style traffic, randomize request paths, methods, headers, and bodies:
+
+```bash
+python3 -m attack_sim http --url http://127.0.0.1:8080/ --duration 10 --concurrency 20 --rate 200 --paths /,/login,/api/v1/data --post-ratio 0.3 --user-agents "Mozilla/5.0,Python/3.11" --randomize --jitter-ms 10
+```
+
+For benign-looking normal traffic, use the new command:
+
+```bash
+python3 -m attack_sim normal-http --url http://127.0.0.1:8080/ --duration 10 --concurrency 10 --rate 20
+```
+
 `--keepalive` will reuse one TCP connection per worker (more stable RPS, less connect churn):
 
 ```bash
