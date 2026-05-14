@@ -1,0 +1,15 @@
+{
+  "pcap": "generated_normal_http.pcap",
+  "label": "normal",
+  "packets": 300,
+  "duration_s": 2.990000009536743,
+  "pps": 100.33444784051376,
+  "avg_pkt_size": 146.07333333333332,
+  "proto_dist": {
+    "TCP": 300
+  },
+  "src_ip_entropy": 4.6144093452479416,
+  "syn_count": 0,
+  "ack_count": 300,
+  "syn_ack_ratio": 0.0
+}

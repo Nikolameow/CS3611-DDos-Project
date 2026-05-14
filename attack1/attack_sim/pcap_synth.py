@@ -147,6 +147,16 @@ class ReflectPcapConfig:
     max_src_port: int = 65535
 
 
+@dataclass(frozen=True)
+class NormalPcapConfig:
+    server_ip: str = "127.0.0.1"
+    server_port: int = 8080
+    session_count: int = 700
+    pcap_path: str = "/tmp/generated_normal_http.pcap"
+    min_src_port: int = 1024
+    max_src_port: int = 65535
+
+
 def generate_syn_spoof_pcap(cfg: SynPcapConfig) -> Path:
     pcap = Path(cfg.pcap_path)
     if pcap.exists():
@@ -163,6 +173,54 @@ def generate_syn_spoof_pcap(cfg: SynPcapConfig) -> Path:
             tcp_hdr = _tcp_header(src_ip, cfg.target_ip, src_port, cfg.target_port, seq, 0x02, tcp_payload)
             ip_hdr = _ip_header(src_ip, cfg.target_ip, tcp_hdr, socket.IPPROTO_TCP, random.randint(0, 0xFFFF))
             _write_pcap_packet(fh, ip_hdr + tcp_hdr + tcp_payload, ts + i * 0.0001)
+    return pcap
+
+
+def generate_normal_http_pcap(cfg: NormalPcapConfig) -> Path:
+    """Generate benign TCP/HTTP-like sessions as an offline PCAP."""
+
+    pcap = Path(cfg.pcap_path)
+    if pcap.exists():
+        pcap.unlink()
+    pcap.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(pcap, "wb") as fh:
+        fh.write(PCAP_GLOBAL_HEADER)
+        ts = time.time()
+        for i in range(cfg.session_count):
+            src_ip = f"192.168.10.{(i % 200) + 1}"
+            src_port = random.randint(cfg.min_src_port, cfg.max_src_port)
+            client_seq = random.randrange(0, 0xFFFFFFFF)
+            server_seq = random.randrange(0, 0xFFFFFFFF)
+            gap = i * 0.004
+
+            request = (
+                f"GET /index.html?item={i % 17} HTTP/1.1\r\n"
+                f"Host: localhost:{cfg.server_port}\r\n"
+                "User-Agent: benign-client\r\n"
+                "Accept: */*\r\n\r\n"
+            ).encode()
+            response = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/plain\r\n"
+                f"Content-Length: {64 + (i % 96)}\r\n\r\n"
+            ).encode() + (b"N" * (64 + (i % 96)))
+
+            packets = [
+                (src_ip, cfg.server_ip, src_port, cfg.server_port, client_seq, 0x02, b"", 0.0000),
+                (cfg.server_ip, src_ip, cfg.server_port, src_port, server_seq, 0x12, b"", 0.0003),
+                (src_ip, cfg.server_ip, src_port, cfg.server_port, client_seq + 1, 0x10, b"", 0.0006),
+                (src_ip, cfg.server_ip, src_port, cfg.server_port, client_seq + 1, 0x18, request, 0.0010),
+                (cfg.server_ip, src_ip, cfg.server_port, src_port, server_seq + 1, 0x10, b"", 0.0015),
+                (cfg.server_ip, src_ip, cfg.server_port, src_port, server_seq + 1, 0x18, response, 0.0022),
+                (src_ip, cfg.server_ip, src_port, cfg.server_port, client_seq + 1 + len(request), 0x11, b"", 0.0030),
+                (cfg.server_ip, src_ip, cfg.server_port, src_port, server_seq + 1 + len(response), 0x11, b"", 0.0034),
+            ]
+
+            for src, dst, sport, dport, seq, flags, payload, offset in packets:
+                tcp_hdr = _tcp_header(src, dst, sport, dport, seq, flags, payload)
+                ip_hdr = _ip_header(src, dst, tcp_hdr + payload, socket.IPPROTO_TCP, random.randint(0, 0xFFFF))
+                _write_pcap_packet(fh, ip_hdr + tcp_hdr + payload, ts + gap + offset)
     return pcap
 
 

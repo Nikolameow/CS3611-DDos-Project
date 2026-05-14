@@ -25,10 +25,14 @@ def _parse_size_range(value: str | None) -> tuple[int, int] | None:
     if len(parts) != 2:
         raise argparse.ArgumentTypeError("body size range must be MIN,MAX or MIN-MAX")
     return int(parts[0]), int(parts[1])
+
+
 from .pcap_features import extract_pcap_features, format_human, format_json
 from .pcap_synth import (
+    NormalPcapConfig,
     ReflectPcapConfig,
     SynPcapConfig,
+    generate_normal_http_pcap,
     generate_udp_reflect_spoof_pcap,
     generate_syn_spoof_pcap,
 )
@@ -176,6 +180,18 @@ def _cmd_spoofed_udp_reflect(args: argparse.Namespace) -> int:
         pcap_path=args.pcap,
     )
     pcap = generate_udp_reflect_spoof_pcap(cfg)
+    print(str(pcap))
+    return 0
+
+
+def _cmd_normal_http_pcap(args: argparse.Namespace) -> int:
+    cfg = NormalPcapConfig(
+        server_ip=args.server,
+        server_port=args.port,
+        session_count=args.sessions,
+        pcap_path=args.pcap,
+    )
+    pcap = generate_normal_http_pcap(cfg)
     print(str(pcap))
     return 0
 
@@ -375,6 +391,13 @@ def build_parser() -> argparse.ArgumentParser:
     su.add_argument("--response-size", type=int, default=256)
     su.add_argument("--pcap", default="/tmp/udp_reflect_spoof.pcap")
     su.set_defaults(_fn=_cmd_spoofed_udp_reflect)
+
+    n = sub.add_parser("normal-http-pcap", help="Generate a benign TCP/HTTP-like PCAP for model training")
+    n.add_argument("--server", default="127.0.0.1")
+    n.add_argument("--port", type=int, default=8080)
+    n.add_argument("--sessions", type=int, default=700)
+    n.add_argument("--pcap", default="/tmp/generated_normal_http.pcap")
+    n.set_defaults(_fn=_cmd_normal_http_pcap)
 
     d = sub.add_parser("defense", help="Print or apply local iptables/nftables defense commands")
     d.add_argument("--mode", choices=["rate-limit", "blacklist", "nft-http"], required=True)

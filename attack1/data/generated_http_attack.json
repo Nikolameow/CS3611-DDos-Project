@@ -1,0 +1,15 @@
+{
+  "pcap": "generated_http_attack.pcap",
+  "label": "http_flood",
+  "packets": 1000,
+  "duration_s": 2.497499942779541,
+  "pps": 400.4004095740121,
+  "avg_pkt_size": 215.251,
+  "proto_dist": {
+    "TCP": 1000
+  },
+  "src_ip_entropy": 5.4828921423310435,
+  "syn_count": 0,
+  "ack_count": 1000,
+  "syn_ack_ratio": 0.0
+}

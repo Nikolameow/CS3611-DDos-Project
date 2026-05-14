@@ -1,58 +1,62 @@
 [
   {
-    "packets": 7025,
-    "duration_s": 3.1044960021972656,
-    "pps": 2262.8471723036278,
-    "avg_pkt_size": 90.66576512455516,
+    "pcap": "generated_http_attack.pcap",
+    "label": "http_flood",
+    "packets": 1000,
+    "duration_s": 2.497499942779541,
+    "pps": 400.4004095740121,
+    "avg_pkt_size": 215.251,
     "proto_dist": {
-      "TCP": 7025
+      "TCP": 1000
     },
-    "src_ip_entropy": 0.0,
-    "syn_count": 1172,
-    "ack_count": 6439,
-    "syn_ack_ratio": 0.18201584096909457,
-    "pcap": "http_flood.pcap"
+    "src_ip_entropy": 5.4828921423310435,
+    "syn_count": 0,
+    "ack_count": 1000,
+    "syn_ack_ratio": 0.0
   },
   {
-    "packets": 7025,
-    "duration_s": 3.1044960021972656,
-    "pps": 2262.8471723036278,
-    "avg_pkt_size": 90.66576512455516,
+    "pcap": "generated_normal_http.pcap",
+    "label": "normal",
+    "packets": 300,
+    "duration_s": 2.990000009536743,
+    "pps": 100.33444784051376,
+    "avg_pkt_size": 146.07333333333332,
     "proto_dist": {
-      "TCP": 7025
+      "TCP": 300
     },
-    "src_ip_entropy": 0.0,
-    "syn_count": 1172,
-    "ack_count": 6439,
-    "syn_ack_ratio": 0.18201584096909457,
-    "pcap": "http_flood_fixed.pcap"
+    "src_ip_entropy": 4.6144093452479416,
+    "syn_count": 0,
+    "ack_count": 300,
+    "syn_ack_ratio": 0.0
   },
   {
-    "packets": 20,
-    "duration_s": 0.0018999576568603516,
-    "pps": 10526.55038273309,
+    "pcap": "generated_syn_flood.pcap",
+    "label": "syn_flood",
+    "packets": 25000,
+    "duration_s": 2.4998998641967773,
+    "pps": 10000.40055925702,
     "avg_pkt_size": 40.0,
     "proto_dist": {
-      "TCP": 20
+      "TCP": 25000
     },
-    "src_ip_entropy": 4.321928094887363,
-    "syn_count": 20,
+    "src_ip_entropy": 14.56610675993517,
+    "syn_count": 25000,
     "ack_count": 0,
-    "syn_ack_ratio": null,
-    "pcap": "syn_spoof_test.pcap"
+    "syn_ack_ratio": null
   },
   {
-    "packets": 40,
-    "duration_s": 0.0019500255584716797,
-    "pps": 20512.551656681746,
-    "avg_pkt_size": 100.0,
+    "pcap": "generated_udp_reflect.pcap",
+    "label": "udp_reflection",
+    "packets": 50000,
+    "duration_s": 2.4999499320983887,
+    "pps": 20000.400551234794,
+    "avg_pkt_size": 172.0,
     "proto_dist": {
-      "UDP": 40
+      "UDP": 50000
     },
-    "src_ip_entropy": 3.1609640474436795,
+    "src_ip_entropy": 8.283448086717454,
     "syn_count": 0,
     "ack_count": 0,
-    "syn_ack_ratio": null,
-    "pcap": "udp_reflect_spoof_test.pcap"
+    "syn_ack_ratio": null
   }
 ]

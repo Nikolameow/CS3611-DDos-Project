@@ -1,0 +1,50 @@
+{
+  "method": "kmeans_distance_to_normal_clusters",
+  "clusters": 3,
+  "threshold_percentile": 99.0,
+  "threshold": 4.828031423689346,
+  "normal_label": "normal",
+  "train_normal_windows": 52,
+  "evaluated_windows": 200,
+  "classification_report": {
+    "normal": {
+      "precision": 1.0,
+      "recall": 0.9807692307692307,
+      "f1-score": 0.9902912621359223,
+      "support": 52.0
+    },
+    "anomaly": {
+      "precision": 0.9932885906040269,
+      "recall": 1.0,
+      "f1-score": 0.9966329966329966,
+      "support": 148.0
+    },
+    "accuracy": 0.995,
+    "macro avg": {
+      "precision": 0.9966442953020134,
+      "recall": 0.9903846153846154,
+      "f1-score": 0.9934621293844594,
+      "support": 200.0
+    },
+    "weighted avg": {
+      "precision": 0.9950335570469798,
+      "recall": 0.995,
+      "f1-score": 0.9949841456637575,
+      "support": 200.0
+    }
+  },
+  "confusion_matrix": [
+    [
+      51,
+      1
+    ],
+    [
+      0,
+      148
+    ]
+  ],
+  "labels": [
+    "normal",
+    "anomaly"
+  ]
+}

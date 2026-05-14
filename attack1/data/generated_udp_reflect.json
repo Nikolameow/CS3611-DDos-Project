@@ -1,0 +1,15 @@
+{
+  "pcap": "generated_udp_reflect.pcap",
+  "label": "udp_reflection",
+  "packets": 50000,
+  "duration_s": 2.4999499320983887,
+  "pps": 20000.400551234794,
+  "avg_pkt_size": 172.0,
+  "proto_dist": {
+    "UDP": 50000
+  },
+  "src_ip_entropy": 8.283448086717454,
+  "syn_count": 0,
+  "ack_count": 0,
+  "syn_ack_ratio": null
+}

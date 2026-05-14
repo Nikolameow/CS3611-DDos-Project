@@ -1,0 +1,15 @@
+{
+  "pcap": "generated_syn_flood.pcap",
+  "label": "syn_flood",
+  "packets": 25000,
+  "duration_s": 2.4998998641967773,
+  "pps": 10000.40055925702,
+  "avg_pkt_size": 40.0,
+  "proto_dist": {
+    "TCP": 25000
+  },
+  "src_ip_entropy": 14.56610675993517,
+  "syn_count": 25000,
+  "ack_count": 0,
+  "syn_ack_ratio": null
+}

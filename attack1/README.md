@@ -122,8 +122,8 @@ python3 -m attack_sim pcap-features --pcap /path/to/capture.pcap --json
 To capture a loopback HTTP flood into a PCAP in one step (requires sudo due to tcpdump permissions):
 
 ```bash
-sudo python3 -m attack_sim capture-http --host 127.0.0.1 --port 8080 --duration 3 --concurrency 20 --rate 200 --pcap /tmp/http_flood.pcap
-python3 -m attack_sim pcap-features --pcap /tmp/http_flood.pcap
+sudo python3 -m attack_sim capture-http --host 127.0.0.1 --port 8080 --duration 3 --concurrency 20 --rate 200 --pcap /tmp/captured_http_demo.pcap
+python3 -m attack_sim pcap-features --pcap /tmp/captured_http_demo.pcap
 ```
 
 ## Repository data artifacts
@@ -132,10 +132,10 @@ Sample attack data and feature summaries are available under `data/`.
 
 The following files are included:
 
-- `data/http_flood.pcap`
-- `data/http_flood_fixed.pcap`
-- `data/syn_spoof_test.pcap`
-- `data/udp_reflect_spoof_test.pcap`
+- `data/generated_normal_http.pcap`
+- `data/generated_http_attack.pcap`
+- `data/generated_syn_flood.pcap`
+- `data/generated_udp_reflect.pcap`
 - `data/features_summary.json`
 - `data/features_summary.csv`
 
