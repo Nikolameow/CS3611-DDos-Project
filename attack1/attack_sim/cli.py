@@ -270,7 +270,7 @@ def _cmd_defense(args: argparse.Namespace) -> int:
             raise SystemExit("--ip is required for blacklist mode")
         commands = build_iptables_blacklist(args.ip)
     else:
-        commands = build_nft_http_port_filter(port=args.port)
+        commands = build_nft_http_port_filter(port=args.port, rate_per_sec=args.rate)
 
     apply_commands(commands, dry_run=not args.apply)
     return 0
@@ -280,7 +280,7 @@ def _cmd_auto_block(args: argparse.Namespace) -> int:
     cfg = AutoBlockConfig(
         log_file=args.log_file,
         threshold=args.threshold,
-        window=args.window,
+        window_s=args.window,
         dry_run=not args.apply,
     )
     blocker = AutoBlocker(cfg)
@@ -305,7 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(_fn=_cmd_demo_server)
 
     h = sub.add_parser("http", help="Generate local-only HTTP load")
-    h.add_argument("--url", required=True, help="Must be http://localhost/127.0.0.1/::1")
+    h.add_argument("--url", required=True, help="Must target loopback or a private lab address")
     h.add_argument("--path", default=None, help="Optional request path override")
     h.add_argument("--paths", default=None, help="Comma-separated list of URL paths to randomize")
     h.add_argument("--method", choices=["GET", "POST"], default="GET")
@@ -324,7 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
     h.set_defaults(_fn=_cmd_http)
 
     n = sub.add_parser("normal-http", help="Generate benign-style HTTP traffic for mixed flow datasets")
-    n.add_argument("--url", required=True, help="Must be http://localhost/127.0.0.1/::1")
+    n.add_argument("--url", required=True, help="Must target loopback or a private lab address")
     n.add_argument("--paths", default=None, help="Comma-separated list of normal URL paths")
     n.add_argument("--duration", type=float, default=10.0)
     n.add_argument("--concurrency", type=int, default=10)
@@ -355,7 +355,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--pcap", default="/tmp/attack_sim_loopback.pcap")
     c.set_defaults(_fn=_cmd_capture_http)
 
-    t = sub.add_parser("syn", help="Generate local-only TCP connection flood to localhost (not raw SYN packets)")
+    t = sub.add_parser("syn", help="Generate lab-only TCP connection flood (not raw SYN packets)")
     t.add_argument("--host", default="127.0.0.1")
     t.add_argument("--port", type=int, default=8080)
     t.add_argument("--duration", type=float, default=10.0)

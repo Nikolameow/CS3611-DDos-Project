@@ -17,11 +17,16 @@ def build_iptables_blacklist(ip: str) -> list[str]:
     ]
 
 
-def build_nft_http_port_filter(table: str = "inet", chain: str = "input", port: int = 80) -> list[str]:
+def build_nft_http_port_filter(
+    table: str = "inet",
+    chain: str = "input",
+    port: int = 80,
+    rate_per_sec: float = 50.0,
+) -> list[str]:
     return [
         f"nft add table {table} ddos_filter",
         f"nft add chain {table} ddos_filter {chain} {{ type filter hook input priority 0 ; policy accept ; }}",
-        f"nft add rule {table} ddos_filter {chain} tcp dport {port} ct state new limit rate 50/second accept",
+        f"nft add rule {table} ddos_filter {chain} tcp dport {port} ct state new limit rate {rate_per_sec}/second accept",
         f"nft add rule {table} ddos_filter {chain} tcp dport {port} drop",
     ]
 
