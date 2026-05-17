@@ -9,20 +9,21 @@ class TargetNotAllowed(ValueError):
     pass
 
 
-def _is_loopback_ip(ip: str) -> bool:
+def _is_allowed_lab_ip(ip: str) -> bool:
     try:
-        return ipaddress.ip_address(ip).is_loopback
+        addr = ipaddress.ip_address(ip)
     except ValueError:
         return False
+    return addr.is_loopback or addr.is_private
 
 
 def ensure_loopback_host(host: str) -> None:
-    """Raise if host does not resolve exclusively to loopback addresses."""
+    """Raise if host does not resolve exclusively to loopback/private lab addresses."""
     host = host.strip()
     if host in {"localhost"}:
         return
 
-    if _is_loopback_ip(host):
+    if _is_allowed_lab_ip(host):
         return
 
     try:
@@ -34,10 +35,11 @@ def ensure_loopback_host(host: str) -> None:
     if not resolved:
         raise TargetNotAllowed(f"Host resolves to no addresses: {host}")
 
-    non_loopback = [ip for ip in resolved if not _is_loopback_ip(ip)]
-    if non_loopback:
+    disallowed = [ip for ip in resolved if not _is_allowed_lab_ip(ip)]
+    if disallowed:
         raise TargetNotAllowed(
-            f"Target host must be loopback only (localhost/127.0.0.1/::1). Got: {host} -> {sorted(resolved)}"
+            "Target host must stay inside the lab network "
+            f"(loopback or RFC1918/private addresses only). Got: {host} -> {sorted(resolved)}"
         )
 
 

@@ -1,2 +1,4 @@
 joblib
+matplotlib
+scapy
 scikit-learn
