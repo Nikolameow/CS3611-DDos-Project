@@ -8,6 +8,7 @@ from .capture_http import CaptureHttpConfig, capture_http_to_pcap
 from .defense import apply_commands, build_iptables_blacklist, build_iptables_rate_limit, build_nft_http_port_filter
 from .auto_block import AutoBlockConfig, AutoBlocker
 from .http_load import HttpLoadConfig, run_http_load
+from .live_block import LiveBlockConfig, LiveBlocker
 from .metrics import summarize_latencies_ms
 
 
@@ -36,6 +37,7 @@ from .pcap_synth import (
     generate_udp_reflect_spoof_pcap,
     generate_syn_spoof_pcap,
 )
+from .raw_syn import RawSynConfig, run_raw_syn_flood
 from .syn_flood import SynFloodConfig, run_syn_flood
 from .udp_reflect import UdpReflectConfig, run_udp_reflect
 
@@ -227,6 +229,20 @@ def _cmd_syn(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_raw_syn(args: argparse.Namespace) -> int:
+    cfg = RawSynConfig(
+        target=args.target,
+        port=args.port,
+        duration_s=args.duration,
+        rate=args.rate,
+    )
+    metrics = run_raw_syn_flood(cfg)
+    print("--- raw spoofed SYN flood summary ---")
+    print(f"sent={metrics.sent} ok={metrics.ok} errors={metrics.errors}")
+    print(f"elapsed_s={metrics.elapsed_s():.2f} pps={metrics.rps():.1f}")
+    return 0
+
+
 def _cmd_udp_reflect(args: argparse.Namespace) -> int:
     cfg = UdpReflectConfig(
         host=args.host,
@@ -289,6 +305,21 @@ def _cmd_auto_block(args: argparse.Namespace) -> int:
         blocker.run()
     except KeyboardInterrupt:
         print("Auto-block monitor stopped by user")
+    return 0
+
+
+def _cmd_live_block(args: argparse.Namespace) -> int:
+    cfg = LiveBlockConfig(
+        interface=args.interface,
+        port=args.port,
+        threshold=args.threshold,
+        window_s=args.window,
+        dry_run=not args.apply,
+    )
+    try:
+        LiveBlocker(cfg).run()
+    except KeyboardInterrupt:
+        print("Live block monitor stopped by user")
     return 0
 
 
@@ -365,6 +396,13 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--keep-open", type=float, default=0.05, help="Keep each connection open briefly")
     t.set_defaults(_fn=_cmd_syn)
 
+    rs = sub.add_parser("raw-syn", help="Generate lab-only raw SYN flood with spoofed private source IPs; requires root/CAP_NET_RAW")
+    rs.add_argument("--target", default="127.0.0.1", help="Must target loopback or a private lab address")
+    rs.add_argument("--port", type=int, default=8080)
+    rs.add_argument("--duration", type=float, default=5.0)
+    rs.add_argument("--rate", type=float, default=500.0)
+    rs.set_defaults(_fn=_cmd_raw_syn)
+
     u = sub.add_parser("udp-reflect", help="Run a local UDP reflector and client to simulate amplification patterns")
     u.add_argument("--host", default="127.0.0.1")
     u.add_argument("--server-port", type=int, default=4000)
@@ -414,6 +452,14 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--window", type=int, default=60)
     a.add_argument("--apply", action="store_true", help="Actually apply blacklist rules")
     a.set_defaults(_fn=_cmd_auto_block)
+
+    lb = sub.add_parser("live-block", help="Monitor tcpdump traffic and auto-blacklist source IPs over a per-window threshold")
+    lb.add_argument("--interface", required=True)
+    lb.add_argument("--port", type=int, default=8080)
+    lb.add_argument("--threshold", type=int, default=1000)
+    lb.add_argument("--window", type=int, default=60)
+    lb.add_argument("--apply", action="store_true", help="Actually apply blacklist rules")
+    lb.set_defaults(_fn=_cmd_live_block)
 
     return p
 

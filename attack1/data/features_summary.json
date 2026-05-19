@@ -3,13 +3,13 @@
     "pcap": "generated_http_attack.pcap",
     "label": "http_flood",
     "packets": 1000,
-    "duration_s": 2.497499942779541,
-    "pps": 400.4004095740121,
-    "avg_pkt_size": 215.251,
+    "duration_s": 1.5257651805877686,
+    "pps": 655.4088484407354,
+    "avg_pkt_size": 205.416,
     "proto_dist": {
       "TCP": 1000
     },
-    "src_ip_entropy": 5.4828921423310435,
+    "src_ip_entropy": 5.008067451761403,
     "syn_count": 0,
     "ack_count": 1000,
     "syn_ack_ratio": 0.0
@@ -17,29 +17,29 @@
   {
     "pcap": "generated_normal_http.pcap",
     "label": "normal",
-    "packets": 300,
-    "duration_s": 2.990000009536743,
-    "pps": 100.33444784051376,
-    "avg_pkt_size": 146.07333333333332,
+    "packets": 5600,
+    "duration_s": 27.7937970161438,
+    "pps": 201.48380578397712,
+    "avg_pkt_size": 74.14375,
     "proto_dist": {
-      "TCP": 300
+      "TCP": 5600
     },
-    "src_ip_entropy": 4.6144093452479416,
-    "syn_count": 0,
-    "ack_count": 300,
-    "syn_ack_ratio": 0.0
+    "src_ip_entropy": 4.4960667199869855,
+    "syn_count": 1400,
+    "ack_count": 4900,
+    "syn_ack_ratio": 0.2857142857142857
   },
   {
     "pcap": "generated_syn_flood.pcap",
     "label": "syn_flood",
     "packets": 25000,
-    "duration_s": 2.4998998641967773,
-    "pps": 10000.40055925702,
+    "duration_s": 2.488136053085327,
+    "pps": 10047.682066661755,
     "avg_pkt_size": 40.0,
     "proto_dist": {
       "TCP": 25000
     },
-    "src_ip_entropy": 14.56610675993517,
+    "src_ip_entropy": 10.594172021263917,
     "syn_count": 25000,
     "ack_count": 0,
     "syn_ack_ratio": null
@@ -48,13 +48,13 @@
     "pcap": "generated_udp_reflect.pcap",
     "label": "udp_reflection",
     "packets": 50000,
-    "duration_s": 2.4999499320983887,
-    "pps": 20000.400551234794,
+    "duration_s": 3.4749581813812256,
+    "pps": 14388.662363736996,
     "avg_pkt_size": 172.0,
     "proto_dist": {
       "UDP": 50000
     },
-    "src_ip_entropy": 8.283448086717454,
+    "src_ip_entropy": 9.691410186419661,
     "syn_count": 0,
     "ack_count": 0,
     "syn_ack_ratio": null

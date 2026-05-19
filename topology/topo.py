@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import subprocess
 import sys
 import time
@@ -77,14 +79,60 @@ def _stop_process(proc, label: str) -> None:
         proc.wait(timeout=3)
 
 
+def _host_has_command(host, command: str) -> bool:
+    return bool(host.cmd(f"command -v {command}").strip())
+
+
+def _python_has_detection_deps(python: str) -> bool:
+    try:
+        subprocess.run(
+            [python, "-c", "import joblib, sklearn"],
+            cwd=PROJECT_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return True
+
+
+def _detection_python() -> str:
+    candidates: list[str] = []
+    if os.environ.get("DETECTION_PYTHON"):
+        candidates.append(os.environ["DETECTION_PYTHON"])
+    candidates.append(sys.executable)
+    if os.environ.get("SUDO_USER"):
+        candidates.append(f"/home/{os.environ['SUDO_USER']}/miniconda3/bin/python3")
+    conda_python = shutil.which("python3")
+    if conda_python:
+        candidates.append(conda_python)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if _python_has_detection_deps(candidate):
+            return candidate
+
+    print("[!] 未找到包含 joblib/sklearn 的 Python，使用当前解释器尝试检测")
+    print("[!] 可通过 DETECTION_PYTHON=/path/to/python3 指定检测解释器")
+    return sys.executable
+
+
 def _run_detection() -> None:
     if not DEMO_PCAP.exists() or DEMO_PCAP.stat().st_size == 0:
         print(f"[!] 未生成有效 PCAP，跳过检测: {DEMO_PCAP}")
         return
 
+    detection_python = _detection_python()
+    print(f"[*] 检测 Python: {detection_python}")
+    for output_path in (DEMO_FEATURES, DEMO_CLASSIFIER_LOG, DEMO_ANOMALY_LOG):
+        output_path.unlink(missing_ok=True)
     commands = [
         [
-            sys.executable,
+            detection_python,
             "-m",
             "detection.features",
             "--input-dir",
@@ -95,14 +143,14 @@ def _run_detection() -> None:
             "0.05",
         ],
         [
-            sys.executable,
+            detection_python,
             "-m",
             "detection.predict_classifier",
             "--features",
             str(DEMO_FEATURES),
         ],
         [
-            sys.executable,
+            detection_python,
             "-m",
             "detection.predict_anomaly",
             "--features",
@@ -150,6 +198,7 @@ def run_demo(duration: float, rate: float, use_nft: bool) -> None:
     net = Mininet(topo=DDoSTopo(), switch=OVSBridge, controller=None)
     server_proc = None
     capture_proc = None
+    live_block_proc = None
     net.start()
 
     try:
@@ -159,9 +208,14 @@ def run_demo(duration: float, rate: float, use_nft: bool) -> None:
 
         print("\n[*] 拓扑就绪，开始一键攻防演示")
         _run_host_command(victim, "victim", f"ip addr show victim-eth0 | grep 'inet '")
-        _run_host_command(victim, "defense", _root_cmd(f"defense/defense_main.py rules --mode rate-limit --port {VICTIM_PORT} --rate 80 --burst 80 --apply"))
-        if use_nft:
+        if _host_has_command(victim, "iptables"):
+            _run_host_command(victim, "defense", _root_cmd(f"defense/defense_main.py rules --mode rate-limit --port {VICTIM_PORT} --rate 80 --burst 80 --apply"))
+        else:
+            print("[!] victim namespace 内找不到 iptables，跳过防火墙限速和自动封禁")
+        if use_nft and _host_has_command(victim, "nft"):
             _run_host_command(victim, "defense-nft", _root_cmd(f"defense/defense_main.py rules --mode nft-http --port {VICTIM_PORT} --rate 80 --apply || true"))
+        elif use_nft:
+            print("[!] victim namespace 内找不到 nft，跳过 nftables 清洗规则")
 
         server_proc = _start_host_process(
             victim,
@@ -170,12 +224,20 @@ def run_demo(duration: float, rate: float, use_nft: bool) -> None:
         )
         time.sleep(1.0)
 
-        if victim.cmd("which tcpdump").strip():
+        if _host_has_command(victim, "tcpdump"):
             capture_proc = _start_host_process(
                 victim,
                 "tcpdump",
                 f"tcpdump -i victim-eth0 -w {DEMO_PCAP} tcp port {VICTIM_PORT}",
             )
+            if _host_has_command(victim, "iptables"):
+                live_block_proc = _start_host_process(
+                    victim,
+                    "live-block",
+                    _root_cmd(f"defense/defense_main.py live-block --interface victim-eth0 --port {VICTIM_PORT} --threshold 250 --window 3 --apply"),
+                )
+            else:
+                print("[!] 缺少 iptables，实时统计封禁只可在安装后演示")
             time.sleep(1.0)
         else:
             print("[!] victim namespace 内找不到 tcpdump，跳过抓包和后续模型检测")
@@ -189,8 +251,8 @@ def run_demo(duration: float, rate: float, use_nft: bool) -> None:
             ),
             _start_host_process(
                 h2,
-                "h2-tcp-flood",
-                _attack_cmd(f"syn --host {VICTIM_IP} --port {VICTIM_PORT} --duration {duration} --concurrency 120 --rate {rate * 2}"),
+                "h2-raw-syn-flood",
+                _attack_cmd(f"raw-syn --target {VICTIM_IP} --port {VICTIM_PORT} --duration {duration} --rate {rate * 8} || python3 -m attack_sim syn --host {VICTIM_IP} --port {VICTIM_PORT} --duration {duration} --concurrency 120 --rate {rate * 2}"),
             ),
             _start_host_process(
                 h3,
@@ -208,10 +270,14 @@ def run_demo(duration: float, rate: float, use_nft: bool) -> None:
             proc.wait()
 
         time.sleep(1.0)
+        if live_block_proc is not None:
+            _stop_process(live_block_proc, "live-block")
         if capture_proc is not None:
             _stop_process(capture_proc, "tcpdump")
         _run_detection()
     finally:
+        if live_block_proc is not None:
+            _stop_process(live_block_proc, "live-block")
         if capture_proc is not None:
             _stop_process(capture_proc, "tcpdump")
         if server_proc is not None:

@@ -20,6 +20,7 @@ from attack_sim.defense import (
     build_iptables_rate_limit,
     build_nft_http_port_filter,
 )
+from attack_sim.live_block import LiveBlockConfig, LiveBlocker
 
 
 def build_demo_rules(port: int, rate: float, burst: int) -> list[str]:
@@ -65,6 +66,21 @@ def _cmd_auto_block(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_live_block(args: argparse.Namespace) -> int:
+    cfg = LiveBlockConfig(
+        interface=args.interface,
+        port=args.port,
+        threshold=args.threshold,
+        window_s=args.window,
+        dry_run=not args.apply,
+    )
+    try:
+        LiveBlocker(cfg).run()
+    except KeyboardInterrupt:
+        print("Live block monitor stopped")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DDoS defense rule manager for the lab topology.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -84,6 +100,14 @@ def build_parser() -> argparse.ArgumentParser:
     block.add_argument("--window", type=int, default=60)
     block.add_argument("--apply", action="store_true", help="Actually apply blacklist rules")
     block.set_defaults(fn=_cmd_auto_block)
+
+    live = sub.add_parser("live-block", help="Monitor tcpdump traffic and blacklist abusive source IPs")
+    live.add_argument("--interface", required=True)
+    live.add_argument("--port", type=int, default=8080)
+    live.add_argument("--threshold", type=int, default=1000)
+    live.add_argument("--window", type=int, default=60)
+    live.add_argument("--apply", action="store_true", help="Actually apply blacklist rules")
+    live.set_defaults(fn=_cmd_live_block)
 
     return parser
 

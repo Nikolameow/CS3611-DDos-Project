@@ -33,10 +33,20 @@ FEATURE_COLUMNS = [
     "ack_ratio",
     "syn_ack_ratio",
     "unique_src_ips",
+    "unique_dst_ips",
+    "unique_src_ports",
     "unique_dst_ports",
     "src_ip_entropy",
+    "dst_ip_entropy",
+    "src_port_entropy",
     "dst_port_entropy",
     "mean_interarrival_ms",
+    "std_interarrival_ms",
+    "interarrival_cv",
+    "flow_count",
+    "flow_entropy",
+    "small_packet_ratio",
+    "large_packet_ratio",
     "label",
 ]
 
@@ -47,6 +57,7 @@ class PacketFeature:
     size: int
     protocol: str
     src_ip: str
+    dst_ip: str
     src_port: int
     dst_port: int
     syn: bool
@@ -113,6 +124,7 @@ def _parse_ipv4_packet(timestamp: float, frame: bytes, linktype: int) -> PacketF
     total_length = int.from_bytes(packet[2:4], "big")
     protocol_id = packet[9]
     src_ip = ".".join(str(part) for part in packet[12:16])
+    dst_ip = ".".join(str(part) for part in packet[16:20])
     l4 = packet[ihl:total_length or len(packet)]
 
     protocol = "OTHER"
@@ -139,6 +151,7 @@ def _parse_ipv4_packet(timestamp: float, frame: bytes, linktype: int) -> PacketF
         size=len(frame),
         protocol=protocol,
         src_ip=src_ip,
+        dst_ip=dst_ip,
         src_port=src_port,
         dst_port=dst_port,
         syn=syn,
@@ -210,19 +223,26 @@ def extract_window_features(
     label: str,
     packets: list[PacketFeature],
     http_ports: set[int],
+    duration_floor_s: float = 1e-9,
 ) -> dict[str, float | int | str]:
     timestamps = [packet.timestamp for packet in packets]
     sizes = [packet.size for packet in packets]
     protocols = [packet.protocol for packet in packets]
     src_ips = [packet.src_ip for packet in packets]
+    dst_ips = [packet.dst_ip for packet in packets]
+    src_ports = [str(packet.src_port) for packet in packets]
     dst_ports = [str(packet.dst_port) for packet in packets]
+    flows = [
+        f"{packet.src_ip}:{packet.src_port}-{packet.dst_ip}:{packet.dst_port}-{packet.protocol}"
+        for packet in packets
+    ]
     interarrival = [
         (timestamps[index] - timestamps[index - 1]) * 1000
         for index in range(1, len(timestamps))
     ]
 
     packet_count = len(packets)
-    duration = max(timestamps[-1] - timestamps[0], 1e-9)
+    duration = max(timestamps[-1] - timestamps[0], duration_floor_s, 1e-9)
     syn_count = sum(packet.syn for packet in packets)
     ack_count = sum(packet.ack for packet in packets)
     tcp_count = protocols.count("TCP")
@@ -231,6 +251,8 @@ def extract_window_features(
         packet.protocol == "TCP" and (packet.src_port in http_ports or packet.dst_port in http_ports)
         for packet in packets
     )
+    mean_interarrival = mean(interarrival) if interarrival else 0.0
+    std_interarrival = pstdev(interarrival) if len(interarrival) > 1 else 0.0
 
     return {
         "window_id": window_id,
@@ -247,10 +269,20 @@ def extract_window_features(
         "ack_ratio": round(ratio(ack_count, packet_count), 6),
         "syn_ack_ratio": round(syn_count / max(ack_count, 1), 6),
         "unique_src_ips": len(set(src_ips)),
+        "unique_dst_ips": len(set(dst_ips)),
+        "unique_src_ports": len(set(src_ports)),
         "unique_dst_ports": len(set(dst_ports)),
         "src_ip_entropy": round(entropy(src_ips), 6),
+        "dst_ip_entropy": round(entropy(dst_ips), 6),
+        "src_port_entropy": round(entropy(src_ports), 6),
         "dst_port_entropy": round(entropy(dst_ports), 6),
-        "mean_interarrival_ms": round(mean(interarrival), 6) if interarrival else 0.0,
+        "mean_interarrival_ms": round(mean_interarrival, 6),
+        "std_interarrival_ms": round(std_interarrival, 6),
+        "interarrival_cv": round(std_interarrival / max(mean_interarrival, 1e-9), 6),
+        "flow_count": len(set(flows)),
+        "flow_entropy": round(entropy(flows), 6),
+        "small_packet_ratio": round(ratio(sum(size <= 80 for size in sizes), packet_count), 6),
+        "large_packet_ratio": round(ratio(sum(size >= 512 for size in sizes), packet_count), 6),
         "label": label,
     }
 
@@ -293,7 +325,17 @@ def extract_features(
             window_seconds=window_seconds,
             packets_per_window=packets_per_window,
         ):
-            rows.append(extract_window_features(next_window_id, pcap.name, label, window, http_ports))
+            duration_floor = window_seconds if packets_per_window is None else 1e-9
+            rows.append(
+                extract_window_features(
+                    next_window_id,
+                    pcap.name,
+                    label,
+                    window,
+                    http_ports,
+                    duration_floor_s=duration_floor,
+                )
+            )
             next_window_id += 1
     return rows
 

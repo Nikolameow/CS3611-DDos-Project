@@ -125,6 +125,51 @@ def _random_private_ip() -> str:
     return f"192.168.{random.randint(0,255)}.{random.randint(1,254)}"
 
 
+def _private_ip_pool(size: int) -> list[str]:
+    return [_random_private_ip() for _ in range(max(1, size))]
+
+
+class _TrafficClock:
+    """Generate non-uniform timestamps so synthetic PCAP windows are less idealized."""
+
+    def __init__(
+        self,
+        *,
+        base_interval_s: float,
+        jitter_ratio: float,
+        burst_probability: float,
+        burst_multiplier: float,
+        lull_probability: float,
+        lull_multiplier: float,
+    ):
+        self._base_interval_s = max(base_interval_s, 1e-7)
+        self._jitter_ratio = max(jitter_ratio, 0.0)
+        self._burst_probability = max(min(burst_probability, 1.0), 0.0)
+        self._burst_multiplier = max(burst_multiplier, 1.0)
+        self._lull_probability = max(min(lull_probability, 1.0), 0.0)
+        self._lull_multiplier = max(lull_multiplier, 1.0)
+        self._mode_events_remaining = 0
+        self._mode_multiplier = 1.0
+
+    def advance(self, current_ts: float) -> float:
+        if self._mode_events_remaining <= 0:
+            roll = random.random()
+            if roll < self._burst_probability:
+                self._mode_multiplier = random.uniform(1.5, self._burst_multiplier)
+                self._mode_events_remaining = random.randint(12, 80)
+            elif roll < self._burst_probability + self._lull_probability:
+                self._mode_multiplier = 1.0 / random.uniform(1.5, self._lull_multiplier)
+                self._mode_events_remaining = random.randint(8, 50)
+            else:
+                self._mode_multiplier = 1.0
+                self._mode_events_remaining = random.randint(4, 25)
+
+        jitter = random.uniform(1.0 - self._jitter_ratio, 1.0 + self._jitter_ratio)
+        gap = self._base_interval_s * max(jitter, 0.05) / self._mode_multiplier
+        self._mode_events_remaining -= 1
+        return current_ts + max(gap, 1e-7)
+
+
 @dataclass(frozen=True)
 class SynPcapConfig:
     target_ip: str = "127.0.0.1"
@@ -133,6 +178,13 @@ class SynPcapConfig:
     pcap_path: str = "/tmp/syn_spoof.pcap"
     min_src_port: int = 1024
     max_src_port: int = 65535
+    base_rate_pps: float = 10000.0
+    jitter_ratio: float = 0.75
+    burst_probability: float = 0.18
+    burst_multiplier: float = 5.0
+    lull_probability: float = 0.10
+    lull_multiplier: float = 3.0
+    src_ip_pool_size: int = 1200
 
 
 @dataclass(frozen=True)
@@ -145,6 +197,14 @@ class ReflectPcapConfig:
     pcap_path: str = "/tmp/udp_reflect_spoof.pcap"
     min_src_port: int = 1024
     max_src_port: int = 65535
+    base_request_rate: float = 8000.0
+    jitter_ratio: float = 0.70
+    burst_probability: float = 0.16
+    burst_multiplier: float = 4.0
+    lull_probability: float = 0.12
+    lull_multiplier: float = 3.0
+    reflector_pool_size: int = 96
+    victim_pool_size: int = 800
 
 
 @dataclass(frozen=True)
@@ -155,6 +215,13 @@ class NormalPcapConfig:
     pcap_path: str = "/tmp/generated_normal_http.pcap"
     min_src_port: int = 1024
     max_src_port: int = 65535
+    base_session_rate: float = 32.0
+    jitter_ratio: float = 0.55
+    burst_probability: float = 0.04
+    burst_multiplier: float = 2.0
+    lull_probability: float = 0.16
+    lull_multiplier: float = 4.0
+    client_pool_size: int = 120
 
 
 def generate_syn_spoof_pcap(cfg: SynPcapConfig) -> Path:
@@ -165,14 +232,25 @@ def generate_syn_spoof_pcap(cfg: SynPcapConfig) -> Path:
     with open(pcap, "wb") as fh:
         fh.write(PCAP_GLOBAL_HEADER)
         ts = time.time()
-        for i in range(cfg.packet_count):
-            src_ip = _random_private_ip()
+        event_ts = ts
+        clock = _TrafficClock(
+            base_interval_s=1.0 / cfg.base_rate_pps,
+            jitter_ratio=cfg.jitter_ratio,
+            burst_probability=cfg.burst_probability,
+            burst_multiplier=cfg.burst_multiplier,
+            lull_probability=cfg.lull_probability,
+            lull_multiplier=cfg.lull_multiplier,
+        )
+        src_pool = _private_ip_pool(cfg.src_ip_pool_size)
+        for _ in range(cfg.packet_count):
+            src_ip = random.choice(src_pool)
             src_port = random.randint(cfg.min_src_port, cfg.max_src_port)
             seq = random.randrange(0, 0xFFFFFFFF)
             tcp_payload = b""
             tcp_hdr = _tcp_header(src_ip, cfg.target_ip, src_port, cfg.target_port, seq, 0x02, tcp_payload)
             ip_hdr = _ip_header(src_ip, cfg.target_ip, tcp_hdr, socket.IPPROTO_TCP, random.randint(0, 0xFFFF))
-            _write_pcap_packet(fh, ip_hdr + tcp_hdr + tcp_payload, ts + i * 0.0001)
+            _write_pcap_packet(fh, ip_hdr + tcp_hdr + tcp_payload, event_ts)
+            event_ts = clock.advance(event_ts)
     return pcap
 
 
@@ -187,12 +265,21 @@ def generate_normal_http_pcap(cfg: NormalPcapConfig) -> Path:
     with open(pcap, "wb") as fh:
         fh.write(PCAP_GLOBAL_HEADER)
         ts = time.time()
+        session_ts = ts
+        clock = _TrafficClock(
+            base_interval_s=1.0 / cfg.base_session_rate,
+            jitter_ratio=cfg.jitter_ratio,
+            burst_probability=cfg.burst_probability,
+            burst_multiplier=cfg.burst_multiplier,
+            lull_probability=cfg.lull_probability,
+            lull_multiplier=cfg.lull_multiplier,
+        )
+        clients = [f"192.168.{random.randint(1, 40)}.{random.randint(1, 254)}" for _ in range(max(1, cfg.client_pool_size))]
         for i in range(cfg.session_count):
-            src_ip = f"192.168.10.{(i % 200) + 1}"
+            src_ip = random.choice(clients)
             src_port = random.randint(cfg.min_src_port, cfg.max_src_port)
             client_seq = random.randrange(0, 0xFFFFFFFF)
             server_seq = random.randrange(0, 0xFFFFFFFF)
-            gap = i * 0.004
 
             request = (
                 f"GET /index.html?item={i % 17} HTTP/1.1\r\n"
@@ -208,19 +295,20 @@ def generate_normal_http_pcap(cfg: NormalPcapConfig) -> Path:
 
             packets = [
                 (src_ip, cfg.server_ip, src_port, cfg.server_port, client_seq, 0x02, b"", 0.0000),
-                (cfg.server_ip, src_ip, cfg.server_port, src_port, server_seq, 0x12, b"", 0.0003),
-                (src_ip, cfg.server_ip, src_port, cfg.server_port, client_seq + 1, 0x10, b"", 0.0006),
-                (src_ip, cfg.server_ip, src_port, cfg.server_port, client_seq + 1, 0x18, request, 0.0010),
-                (cfg.server_ip, src_ip, cfg.server_port, src_port, server_seq + 1, 0x10, b"", 0.0015),
-                (cfg.server_ip, src_ip, cfg.server_port, src_port, server_seq + 1, 0x18, response, 0.0022),
-                (src_ip, cfg.server_ip, src_port, cfg.server_port, client_seq + 1 + len(request), 0x11, b"", 0.0030),
-                (cfg.server_ip, src_ip, cfg.server_port, src_port, server_seq + 1 + len(response), 0x11, b"", 0.0034),
+                (cfg.server_ip, src_ip, cfg.server_port, src_port, server_seq, 0x12, b"", 0.0060),
+                (src_ip, cfg.server_ip, src_port, cfg.server_port, client_seq + 1, 0x10, b"", 0.0110),
+                (src_ip, cfg.server_ip, src_port, cfg.server_port, client_seq + 1, 0x18, request, 0.0180),
+                (cfg.server_ip, src_ip, cfg.server_port, src_port, server_seq + 1, 0x10, b"", 0.0250),
+                (cfg.server_ip, src_ip, cfg.server_port, src_port, server_seq + 1, 0x18, response, 0.0330),
+                (src_ip, cfg.server_ip, src_port, cfg.server_port, client_seq + 1 + len(request), 0x11, b"", 0.0410),
+                (cfg.server_ip, src_ip, cfg.server_port, src_port, server_seq + 1 + len(response), 0x11, b"", 0.0480),
             ]
 
             for src, dst, sport, dport, seq, flags, payload, offset in packets:
                 tcp_hdr = _tcp_header(src, dst, sport, dport, seq, flags, payload)
                 ip_hdr = _ip_header(src, dst, tcp_hdr + payload, socket.IPPROTO_TCP, random.randint(0, 0xFFFF))
-                _write_pcap_packet(fh, ip_hdr + tcp_hdr + payload, ts + gap + offset)
+                _write_pcap_packet(fh, ip_hdr + tcp_hdr + payload, session_ts + offset)
+            session_ts = clock.advance(session_ts)
     return pcap
 
 
@@ -232,20 +320,33 @@ def generate_udp_reflect_spoof_pcap(cfg: ReflectPcapConfig) -> Path:
     with open(pcap, "wb") as fh:
         fh.write(PCAP_GLOBAL_HEADER)
         ts = time.time()
-        for i in range(cfg.packet_count):
-            src_ip = _random_private_ip()
+        event_ts = ts
+        clock = _TrafficClock(
+            base_interval_s=1.0 / cfg.base_request_rate,
+            jitter_ratio=cfg.jitter_ratio,
+            burst_probability=cfg.burst_probability,
+            burst_multiplier=cfg.burst_multiplier,
+            lull_probability=cfg.lull_probability,
+            lull_multiplier=cfg.lull_multiplier,
+        )
+        victims = _private_ip_pool(cfg.victim_pool_size)
+        reflectors = _private_ip_pool(cfg.reflector_pool_size)
+        for _ in range(cfg.packet_count):
+            src_ip = random.choice(victims)
+            reflector_ip = random.choice(reflectors)
             src_port = random.randint(cfg.min_src_port, cfg.max_src_port)
             req_payload = b"Q" * cfg.request_size
-            req_udp = _udp_header(src_ip, cfg.target_ip, src_port, cfg.target_port, req_payload)
-            req_ip = _ip_header(src_ip, cfg.target_ip, req_udp + req_payload, socket.IPPROTO_UDP, random.randint(0, 0xFFFF))
-            _write_pcap_packet(fh, req_ip + req_udp + req_payload, ts + i * 0.0001)
+            req_udp = _udp_header(src_ip, reflector_ip, src_port, cfg.target_port, req_payload)
+            req_ip = _ip_header(src_ip, reflector_ip, req_udp + req_payload, socket.IPPROTO_UDP, random.randint(0, 0xFFFF))
+            _write_pcap_packet(fh, req_ip + req_udp + req_payload, event_ts)
 
             resp_src_port = cfg.target_port
             resp_dst_port = src_port
             resp_payload = b"R" * cfg.response_size
-            resp_udp = _udp_header(cfg.target_ip, src_ip, resp_src_port, resp_dst_port, resp_payload)
-            resp_ip = _ip_header(cfg.target_ip, src_ip, resp_udp + resp_payload, socket.IPPROTO_UDP, random.randint(0, 0xFFFF))
-            _write_pcap_packet(fh, resp_ip + resp_udp + resp_payload, ts + i * 0.0001 + 0.00005)
+            resp_udp = _udp_header(reflector_ip, src_ip, resp_src_port, resp_dst_port, resp_payload)
+            resp_ip = _ip_header(reflector_ip, src_ip, resp_udp + resp_payload, socket.IPPROTO_UDP, random.randint(0, 0xFFFF))
+            _write_pcap_packet(fh, resp_ip + resp_udp + resp_payload, event_ts + random.uniform(0.00002, 0.00025))
+            event_ts = clock.advance(event_ts)
     return pcap
 
 
@@ -262,6 +363,12 @@ class HttpPcapConfig:
     request_interval_s: float = 0.01
     min_src_port: int = 1024
     max_src_port: int = 65535
+    jitter_ratio: float = 0.80
+    burst_probability: float = 0.14
+    burst_multiplier: float = 4.5
+    lull_probability: float = 0.10
+    lull_multiplier: float = 3.5
+    src_ip_pool_size: int = 500
 
 
 def _http_request_payload(path: str, method: str, host: str, user_agent: str, body: bytes | None) -> bytes:
@@ -316,8 +423,18 @@ def generate_http_pcap(cfg: HttpPcapConfig) -> Path:
     with open(pcap, "wb") as fh:
         fh.write(PCAP_GLOBAL_HEADER)
         ts = time.time()
-        for i in range(cfg.request_count):
-            src_ip = _random_private_ip()
+        request_ts = ts
+        clock = _TrafficClock(
+            base_interval_s=cfg.request_interval_s,
+            jitter_ratio=cfg.jitter_ratio,
+            burst_probability=cfg.burst_probability,
+            burst_multiplier=cfg.burst_multiplier,
+            lull_probability=cfg.lull_probability,
+            lull_multiplier=cfg.lull_multiplier,
+        )
+        src_pool = _private_ip_pool(cfg.src_ip_pool_size)
+        for _ in range(cfg.request_count):
+            src_ip = random.choice(src_pool)
             src_port = random.randint(cfg.min_src_port, cfg.max_src_port)
             method = "POST" if random.random() < cfg.post_ratio else "GET"
             path = random.choice(paths)
@@ -327,13 +444,14 @@ def generate_http_pcap(cfg: HttpPcapConfig) -> Path:
             req_payload = _http_request_payload(path, method, cfg.target_ip, user_agent, body)
             req_tcp = _tcp_header(src_ip, cfg.target_ip, src_port, cfg.target_port, random.randrange(0, 0xFFFFFFFF), 0x18, req_payload)
             req_ip = _ip_header(src_ip, cfg.target_ip, req_tcp + req_payload, socket.IPPROTO_TCP, random.randint(0, 0xFFFF))
-            _write_pcap_packet(fh, req_ip + req_tcp + req_payload, ts + i * cfg.request_interval_s)
+            _write_pcap_packet(fh, req_ip + req_tcp + req_payload, request_ts)
 
             resp_body = b"OK\n"
             resp_payload = _http_response_payload(resp_body)
             resp_tcp = _tcp_header(cfg.target_ip, src_ip, cfg.target_port, src_port, random.randrange(0, 0xFFFFFFFF), 0x18, resp_payload)
             resp_ip = _ip_header(cfg.target_ip, src_ip, resp_tcp + resp_payload, socket.IPPROTO_TCP, random.randint(0, 0xFFFF))
-            _write_pcap_packet(fh, resp_ip + resp_tcp + resp_payload, ts + i * cfg.request_interval_s + cfg.request_interval_s / 2)
+            _write_pcap_packet(fh, resp_ip + resp_tcp + resp_payload, request_ts + random.uniform(0.001, 0.008))
+            request_ts = clock.advance(request_ts)
     return pcap
 
 
