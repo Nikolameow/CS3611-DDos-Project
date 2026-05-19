@@ -1,7 +1,7 @@
-# Attack Simulation (Local Only)
+# Attack Simulation (Lab Network Only)
 
-This folder contains a **local-only** traffic generator intended for defensive testing on your own machine.
-It **refuses** to target anything except loopback addresses (`localhost`, `127.0.0.1`, `::1`).
+This folder contains a lab-only traffic generator intended for defensive testing in loopback, RFC1918 private networks, or Mininet.
+It refuses public Internet targets.
 
 ## Requirements
 
@@ -17,14 +17,14 @@ Optional (only for PCAP feature extraction):
 1) Start a local demo server:
 
 ```bash
-cd /home/leo/ddos
+cd attack1
 python3 -m attack_sim demo-server --host 127.0.0.1 --port 8080
 ```
 
 2) In another terminal, generate HTTP load (GET):
 
 ```bash
-cd /home/leo/ddos
+cd attack1
 python3 -m attack_sim http --url http://127.0.0.1:8080/ --duration 10 --concurrency 20 --rate 200
 ```
 
@@ -60,6 +60,12 @@ python3 -m attack_sim syn --host 127.0.0.1 --port 8080 --duration 10 --concurren
 
 This mode opens many short-lived TCP connections. It is useful for connection churn and backlog pressure testing, but it is not a raw SYN packet generator.
 
+For a lab-only raw SYN spoof flood, run as root inside loopback/private/Mininet targets only:
+
+```bash
+sudo python3 -m attack_sim raw-syn --target 10.0.0.100 --port 8080 --duration 10 --rate 800
+```
+
 5) Simulate a local UDP reflector/amplifier pattern:
 
 ```bash
@@ -90,12 +96,18 @@ python3 -m attack_sim spoofed-udp-reflect --target 127.0.0.1 --port 53 --packets
 python3 -m attack_sim auto-block --log-file /path/to/attack.log --threshold 100 --window 60
 ```
 
+10) Monitor a network interface with tcpdump and auto-block high-rate sources:
+
+```bash
+sudo python3 -m attack_sim live-block --interface victim-eth0 --port 8080 --threshold 1000 --window 60 --apply
+```
+
 ## Safety
 
 - Only `http://` is accepted (no HTTPS).
-- Only loopback targets are accepted.
+- Only loopback or private lab-network targets are accepted.
 - Concurrency is capped at 200 to avoid accidental overload.
-- All new attack modes in this repository are local-only simulations and do not target external hosts.
+- All attack modes in this repository are lab-only simulations and do not target external hosts.
 
 Example guardrail (will refuse):
 
