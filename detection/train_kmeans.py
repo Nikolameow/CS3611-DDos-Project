@@ -22,7 +22,19 @@ DEFAULT_FEATURES = Path("detection/data/features.csv")
 DEFAULT_MODEL = Path("detection/models/kmeans_anomaly.joblib")
 DEFAULT_SCORES = Path("detection/data/anomaly_scores.csv")
 DEFAULT_METRICS = Path("detection/models/anomaly_metrics.json")
-DROP_COLUMNS = {"window_id", "source_pcap", "label"}
+METADATA_COLUMNS = {
+    "window_id",
+    "source_pcap",
+    "label",
+    "binary_label",
+    "normal_ratio",
+    "http_flood_ratio",
+    "syn_flood_ratio",
+    "udp_reflection_ratio",
+    "attack_ratio",
+    "dominant_attack",
+    "severity",
+}
 
 
 def load_features(path: Path) -> tuple[list[dict[str, str]], list[str]]:
@@ -30,7 +42,7 @@ def load_features(path: Path) -> tuple[list[dict[str, str]], list[str]]:
         rows = list(csv.DictReader(file))
     if not rows:
         raise ValueError(f"no feature rows found in {path}")
-    feature_names = [name for name in rows[0] if name not in DROP_COLUMNS]
+    feature_names = [name for name in rows[0] if name not in METADATA_COLUMNS]
     return rows, feature_names
 
 
@@ -53,6 +65,10 @@ def anomaly_scores(model: Pipeline, x_rows: list[list[float]]) -> list[float]:
     return [float(min(row)) for row in distances]
 
 
+def row_binary_label(row: dict[str, str]) -> str:
+    return row.get("binary_label") or ("normal" if row["label"] == "normal" else "abnormal")
+
+
 def train_detector(
     rows: list[dict[str, str]],
     feature_names: list[str],
@@ -61,12 +77,12 @@ def train_detector(
     seed: int,
     normal_label: str,
 ) -> tuple[Pipeline, float, list[dict[str, str | float | int]], dict[str, object]]:
-    normal_rows = [row for row in rows if row["label"] == normal_label]
+    normal_rows = [row for row in rows if row_binary_label(row) == normal_label]
     if not normal_rows:
         labels = sorted({row["label"] for row in rows})
         raise ValueError(
             "no normal traffic rows found for anomaly training. "
-            f"Expected label '{normal_label}', found labels: {labels}. "
+            f"Expected binary label '{normal_label}', found labels: {labels}. "
             "Add benign/normal PCAPs under attack1/data or pass --normal-label."
         )
     if len(normal_rows) < clusters:
@@ -92,7 +108,7 @@ def train_detector(
 
     for row, score in zip(rows, all_scores):
         predicted = "anomaly" if score > threshold else "normal"
-        actual = "normal" if row["label"] == normal_label else "anomaly"
+        actual = "normal" if row_binary_label(row) == normal_label else "anomaly"
         y_true.append(actual)
         y_pred.append(predicted)
         score_rows.append(
@@ -100,6 +116,7 @@ def train_detector(
                 "window_id": int(row["window_id"]),
                 "source_pcap": row.get("source_pcap", ""),
                 "label": row["label"],
+                "binary_label": row_binary_label(row),
                 "anomaly_score": round(score, 8),
                 "threshold": round(threshold, 8),
                 "predicted_state": predicted,
@@ -133,7 +150,15 @@ def write_scores(rows: list[dict[str, str | float | int]], output: Path) -> None
     with output.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(
             file,
-            fieldnames=["window_id", "source_pcap", "label", "anomaly_score", "threshold", "predicted_state"],
+            fieldnames=[
+                "window_id",
+                "source_pcap",
+                "label",
+                "binary_label",
+                "anomaly_score",
+                "threshold",
+                "predicted_state",
+            ],
         )
         writer.writeheader()
         writer.writerows(rows)

@@ -26,6 +26,7 @@ def main() -> None:
     bundle = joblib.load(args.model)
     model = bundle["model"]
     feature_names = bundle["feature_names"]
+    target_column = bundle.get("target_column", "binary_label")
 
     with args.features.open("r", newline="", encoding="utf-8") as file:
         rows = list(csv.DictReader(file))
@@ -33,9 +34,12 @@ def main() -> None:
     x_rows = [[float(row[name]) for name in feature_names] for row in rows]
     predictions = model.predict(x_rows)
 
-    print("window_id,source_pcap,predicted_label,actual_label")
+    print("window_id,source_pcap,predicted_label,actual_label,target_column")
     for row, prediction in zip(rows, predictions):
-        print(f"{row['window_id']},{row.get('source_pcap', '')},{prediction},{row.get('label', '')}")
+        actual = row.get(target_column)
+        if not actual and target_column == "binary_label":
+            actual = "normal" if row.get("label") == "normal" else "abnormal"
+        print(f"{row['window_id']},{row.get('source_pcap', '')},{prediction},{actual or ''},{target_column}")
 
 
 if __name__ == "__main__":

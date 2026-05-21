@@ -1,5 +1,5 @@
 pcap,label,packets,duration_s,pps,tcp_packets,udp_packets,avg_pkt_size,src_ip_entropy,syn_count,ack_count,syn_ack_ratio
-generated_http_attack.pcap,http_flood,1000,1.525765,655.408848,1000,0,205.416,5.008067,0,1000,0.0
-generated_normal_http.pcap,normal,5600,27.793797,201.483806,5600,0,74.14375,4.496067,1400,4900,0.285714
-generated_syn_flood.pcap,syn_flood,25000,2.488136,10047.682067,25000,0,40.0,10.594172,25000,0,
-generated_udp_reflect.pcap,udp_reflection,50000,3.474958,14388.662364,0,50000,172.0,9.69141,0,0,
+generated_http_attack.pcap,http_flood,3000,7.793973,384.912805,3000,0,218.586,5.344064,0,3000,0.0
+generated_normal_http.pcap,normal,1360,9.518961,142.872737,1360,0,73.7125,4.121704,340,1190,0.285714
+generated_syn_flood.pcap,syn_flood,70000,6.355864,11013.451845,70000,0,40.0,10.212083,70000,0,
+generated_udp_reflect.pcap,udp_reflection,104000,6.470201,16073.689172,0,104000,172.0,9.108128,0,0,

@@ -1,15 +1,15 @@
 {
   "pcap": "generated_normal_http.pcap",
   "label": "normal",
-  "packets": 5600,
-  "duration_s": 27.7937970161438,
-  "pps": 201.48380578397712,
-  "avg_pkt_size": 74.14375,
+  "packets": 1360,
+  "duration_s": 9.518960952758789,
+  "pps": 142.87273650448626,
+  "avg_pkt_size": 73.7125,
   "proto_dist": {
-    "TCP": 5600
+    "TCP": 1360
   },
-  "src_ip_entropy": 4.4960667199869855,
-  "syn_count": 1400,
-  "ack_count": 4900,
+  "src_ip_entropy": 4.121703804768754,
+  "syn_count": 340,
+  "ack_count": 1190,
   "syn_ack_ratio": 0.2857142857142857
 }

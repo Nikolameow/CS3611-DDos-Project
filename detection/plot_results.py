@@ -182,15 +182,25 @@ def plot_mlp_train_test_split(metrics: dict, output_dir: Path) -> None:
 
 def plot_mlp_training_loss(metrics: dict, output_dir: Path) -> None:
     loss_curve = metrics.get("loss_curve", [])
+    validation_loss_curve = metrics.get("validation_loss_curve", [])
     if not loss_curve:
         remove_stale(output_dir / "mlp_training_loss.png")
         return
 
     fig, ax = plt.subplots(figsize=(8.8, 4.6))
-    ax.plot(range(1, len(loss_curve) + 1), loss_curve, color="#54a24b", linewidth=2.0)
-    ax.set_title("MLP Training Loss Curve")
+    ax.plot(range(1, len(loss_curve) + 1), loss_curve, color="#54a24b", linewidth=2.0, label="Train loss")
+    if validation_loss_curve:
+        ax.plot(
+            range(1, len(validation_loss_curve) + 1),
+            validation_loss_curve,
+            color="#e45756",
+            linewidth=2.0,
+            label="Validation loss",
+        )
+    ax.set_title("MLP Training and Validation Loss")
     ax.set_xlabel("Iteration")
     ax.set_ylabel("Loss")
+    ax.legend()
     style_axes(ax)
     save(fig, output_dir / "mlp_training_loss.png")
 
@@ -214,7 +224,7 @@ def plot_mlp_classification_report(metrics: dict, output_dir: Path) -> None:
 
 
 def plot_anomaly_scores(scores: list[dict[str, str]], output_dir: Path) -> None:
-    fig, ax = plt.subplots(figsize=(11, 4.6))
+    fig, ax = plt.subplots(figsize=(11, 5.0))
     colors = {
         "normal": "#4c78a8",
         "syn_flood": "#e45756",
@@ -238,7 +248,9 @@ def plot_anomaly_scores(scores: list[dict[str, str]], output_dir: Path) -> None:
     ax.axhline(threshold, color="#222222", linestyle="--", linewidth=1.4, label="Threshold")
     ax.set_title("K-Means Anomaly Scores by Window")
     ax.set_xlabel("Window ID")
-    ax.set_ylabel("Anomaly Score")
+    ax.set_ylabel("Anomaly Score (symlog scale)")
+    ax.set_yscale("symlog", linthresh=10.0, linscale=0.8)
+    ax.set_ylim(bottom=0)
     ax.legend(ncols=3, fontsize=9)
     style_axes(ax)
     save(fig, output_dir / "anomaly_scores.png")

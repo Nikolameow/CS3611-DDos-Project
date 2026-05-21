@@ -38,13 +38,14 @@ def main() -> None:
     transformed = model.named_steps["scaler"].transform(x_rows)
     distances = model.named_steps["kmeans"].transform(transformed)
 
-    print("window_id,source_pcap,anomaly_score,threshold,predicted_state,actual_label")
+    print("window_id,source_pcap,anomaly_score,threshold,predicted_state,actual_label,binary_label")
     for row, distance_row in zip(rows, distances):
         score = float(min(distance_row))
         predicted = "anomaly" if score > threshold else "normal"
+        binary_label = row.get("binary_label") or ("normal" if row.get("label") == "normal" else "abnormal")
         print(
             f"{row['window_id']},{row.get('source_pcap', '')},"
-            f"{score:.8f},{threshold:.8f},{predicted},{row.get('label', '')}"
+            f"{score:.8f},{threshold:.8f},{predicted},{row.get('label', '')},{binary_label}"
         )
 
 

@@ -14,9 +14,11 @@ from pathlib import Path
 from statistics import mean, pstdev
 
 
-DEFAULT_INPUT_DIR = Path("attack1/data")
+DEFAULT_INPUT_DIR = Path("attack1/data/scenarios")
 DEFAULT_OUTPUT = Path("detection/data/features.csv")
 DEFAULT_HTTP_PORTS = {80, 443, 8080}
+ABNORMAL_THRESHOLD = 0.10
+DOMINANT_ATTACK_THRESHOLD = 0.60
 
 FEATURE_COLUMNS = [
     "window_id",
@@ -48,6 +50,14 @@ FEATURE_COLUMNS = [
     "small_packet_ratio",
     "large_packet_ratio",
     "label",
+    "binary_label",
+    "normal_ratio",
+    "http_flood_ratio",
+    "syn_flood_ratio",
+    "udp_reflection_ratio",
+    "attack_ratio",
+    "dominant_attack",
+    "severity",
 ]
 
 
@@ -62,6 +72,7 @@ class PacketFeature:
     dst_port: int
     syn: bool
     ack: bool
+    origin_label: str = ""
 
 
 def entropy(values: list[str]) -> float:
@@ -89,6 +100,56 @@ def label_from_pcap(path: Path) -> str:
     return "attack"
 
 
+def _packet_labels(default_label: str, packets: list[PacketFeature] | None) -> list[str]:
+    if packets and any(packet.origin_label for packet in packets):
+        return [packet.origin_label or default_label for packet in packets]
+    count = len(packets) if packets else 1
+    return [default_label] * count
+
+
+def label_metadata(label: str, packets: list[PacketFeature] | None = None) -> dict[str, float | str]:
+    packet_labels = _packet_labels(label, packets)
+    total = len(packet_labels)
+    counts = Counter(packet_labels)
+    ratios = {
+        "normal_ratio": round(ratio(counts["normal"], total), 6),
+        "http_flood_ratio": round(ratio(counts["http_flood"], total), 6),
+        "syn_flood_ratio": round(ratio(counts["syn_flood"], total), 6),
+        "udp_reflection_ratio": round(ratio(counts["udp_reflection"], total), 6),
+    }
+
+    attack_count = total - counts["normal"]
+    attack_ratio = round(ratio(attack_count, total), 6)
+    if attack_ratio < ABNORMAL_THRESHOLD:
+        return {
+            "binary_label": "normal",
+            **ratios,
+            "attack_ratio": attack_ratio,
+            "dominant_attack": "none",
+            "severity": "none",
+        }
+
+    attack_counts = {name: count for name, count in counts.items() if name != "normal" and count > 0}
+    dominant_attack, dominant_count = max(attack_counts.items(), key=lambda item: item[1])
+    if ratio(dominant_count, attack_count) < DOMINANT_ATTACK_THRESHOLD:
+        dominant_attack = "mixed_attack"
+
+    if attack_ratio < 0.30:
+        severity = "low"
+    elif attack_ratio < 0.60:
+        severity = "medium"
+    else:
+        severity = "high"
+
+    return {
+        "binary_label": "abnormal",
+        **ratios,
+        "attack_ratio": attack_ratio,
+        "dominant_attack": dominant_attack,
+        "severity": severity,
+    }
+
+
 def _pcap_endian(magic: bytes) -> str:
     if magic in {b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1"}:
         return "<"
@@ -112,7 +173,12 @@ def _ipv4_payload(frame: bytes, linktype: int) -> bytes | None:
     return frame[offset:]
 
 
-def _parse_ipv4_packet(timestamp: float, frame: bytes, linktype: int) -> PacketFeature | None:
+def _parse_ipv4_packet(
+    timestamp: float,
+    frame: bytes,
+    linktype: int,
+    origin_label: str = "",
+) -> PacketFeature | None:
     packet = _ipv4_payload(frame, linktype)
     if packet is None or len(packet) < 20:
         return None
@@ -156,10 +222,25 @@ def _parse_ipv4_packet(timestamp: float, frame: bytes, linktype: int) -> PacketF
         dst_port=dst_port,
         syn=syn,
         ack=ack,
+        origin_label=origin_label,
     )
 
 
+def read_packet_labels(path: Path) -> dict[int, str]:
+    label_path = path.with_suffix(".labels.csv")
+    if not label_path.exists():
+        return {}
+
+    with label_path.open("r", newline="", encoding="utf-8") as file:
+        return {
+            int(row["packet_index"]): row["label"]
+            for row in csv.DictReader(file)
+            if row.get("packet_index") and row.get("label")
+        }
+
+
 def read_pcap_packets(path: Path) -> list[PacketFeature]:
+    packet_labels = read_packet_labels(path)
     with path.open("rb") as file:
         header = file.read(24)
         if len(header) != 24:
@@ -168,6 +249,7 @@ def read_pcap_packets(path: Path) -> list[PacketFeature]:
         _, _, _, _, _, _, linktype = struct.unpack(f"{endian}IHHIIII", header)
 
         packets: list[PacketFeature] = []
+        packet_index = 0
         while True:
             packet_header = file.read(16)
             if not packet_header:
@@ -179,9 +261,15 @@ def read_pcap_packets(path: Path) -> list[PacketFeature]:
             if len(frame) != incl_len:
                 raise ValueError(f"{path} has a truncated packet body")
             timestamp = ts_sec + ts_frac / 1_000_000
-            parsed = _parse_ipv4_packet(timestamp, frame, linktype)
+            parsed = _parse_ipv4_packet(
+                timestamp,
+                frame,
+                linktype,
+                origin_label=packet_labels.get(packet_index, ""),
+            )
             if parsed is not None:
                 packets.append(parsed)
+            packet_index += 1
     return packets
 
 
@@ -254,6 +342,9 @@ def extract_window_features(
     mean_interarrival = mean(interarrival) if interarrival else 0.0
     std_interarrival = pstdev(interarrival) if len(interarrival) > 1 else 0.0
 
+    metadata = label_metadata(label, packets)
+    window_label = "normal" if metadata["binary_label"] == "normal" else str(metadata["dominant_attack"])
+
     return {
         "window_id": window_id,
         "source_pcap": source_pcap,
@@ -283,7 +374,8 @@ def extract_window_features(
         "flow_entropy": round(entropy(flows), 6),
         "small_packet_ratio": round(ratio(sum(size <= 80 for size in sizes), packet_count), 6),
         "large_packet_ratio": round(ratio(sum(size >= 512 for size in sizes), packet_count), 6),
-        "label": label,
+        "label": window_label,
+        **metadata,
     }
 
 
