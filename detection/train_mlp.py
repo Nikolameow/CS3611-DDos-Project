@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import random
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -40,7 +41,7 @@ def binary_label_from_legacy(label: str) -> str:
     return "normal" if label == "normal" else "abnormal"
 
 
-def load_features(path: Path, target_column: str) -> tuple[list[list[float]], list[str], list[str]]:
+def load_features(path: Path, target_column: str) -> tuple[list[list[float]], list[str], list[str], list[str]]:
     with path.open("r", newline="", encoding="utf-8") as file:
         reader = csv.DictReader(file)
         fieldnames = reader.fieldnames or []
@@ -49,8 +50,10 @@ def load_features(path: Path, target_column: str) -> tuple[list[list[float]], li
         feature_names = [name for name in fieldnames if name not in METADATA_COLUMNS and name != target_column]
         x_rows: list[list[float]] = []
         y_rows: list[str] = []
+        groups: list[str] = []
         for row in reader:
             x_rows.append([float(row[name]) for name in feature_names])
+            groups.append(row.get("source_pcap", f"row-{len(groups)}"))
             if target_column in row and row[target_column]:
                 y_rows.append(row[target_column])
             elif target_column == "binary_label":
@@ -59,7 +62,7 @@ def load_features(path: Path, target_column: str) -> tuple[list[list[float]], li
                 raise ValueError(f"target column '{target_column}' is empty")
     if not x_rows:
         raise ValueError(f"no feature rows found in {path}")
-    return x_rows, y_rows, feature_names
+    return x_rows, y_rows, groups, feature_names
 
 
 def split_by_label(
@@ -95,6 +98,115 @@ def split_by_label(
         [x_rows[index] for index in test_indices],
         [y_rows[index] for index in train_indices],
         [y_rows[index] for index in test_indices],
+    )
+
+
+def seed_group_from_source(source_pcap: str) -> str:
+    match = re.search(r"_seed(\d+)", source_pcap)
+    return f"seed{match.group(1)}" if match else source_pcap
+
+
+def grouped_indices(
+    groups: list[str],
+    *,
+    split_mode: str,
+    seed: int,
+    train_fraction: float,
+    validation_fraction: float,
+) -> tuple[list[int], list[int], list[int], dict[str, object]]:
+    if split_mode == "seed":
+        split_groups = [seed_group_from_source(group) for group in groups]
+    elif split_mode == "source":
+        split_groups = groups
+    else:
+        raise ValueError(f"unsupported split mode: {split_mode}")
+
+    by_group: dict[str, list[int]] = {}
+    for index, group in enumerate(split_groups):
+        by_group.setdefault(group, []).append(index)
+
+    group_names = sorted(by_group)
+    metadata: dict[str, object] = {
+        "requested_split_mode": split_mode,
+        "actual_split_mode": split_mode,
+        "group_count": len(group_names),
+        "groups": group_names,
+    }
+    if len(group_names) < 3:
+        metadata["actual_split_mode"] = "label_stratified_row_fallback"
+        metadata["warning"] = (
+            "fewer than 3 independent groups were available; "
+            "falling back to label-stratified row split"
+        )
+        return [], [], [], metadata
+
+    rng = random.Random(seed)
+    rng.shuffle(group_names)
+    train_count = max(1, round(len(group_names) * train_fraction))
+    validation_count = max(1, round(len(group_names) * validation_fraction))
+    if train_count + validation_count >= len(group_names):
+        train_count = max(1, len(group_names) - 2)
+        validation_count = 1
+
+    train_groups = set(group_names[:train_count])
+    validation_groups = set(group_names[train_count : train_count + validation_count])
+    test_groups = set(group_names[train_count + validation_count :])
+    metadata.update(
+        {
+            "train_groups": sorted(train_groups),
+            "validation_groups": sorted(validation_groups),
+            "test_groups": sorted(test_groups),
+        }
+    )
+
+    return (
+        [index for index, group in enumerate(split_groups) if group in train_groups],
+        [index for index, group in enumerate(split_groups) if group in validation_groups],
+        [index for index, group in enumerate(split_groups) if group in test_groups],
+        metadata,
+    )
+
+
+def split_train_validation_test(
+    x_rows: list[list[float]],
+    y_rows: list[str],
+    groups: list[str],
+    *,
+    split_mode: str,
+    seed: int,
+    train_fraction: float = 0.60,
+    validation_fraction: float = 0.20,
+) -> tuple[list[list[float]], list[list[float]], list[list[float]], list[str], list[str], list[str], dict[str, object]]:
+    train_indices, validation_indices, test_indices, split_metadata = grouped_indices(
+        groups,
+        split_mode=split_mode,
+        seed=seed,
+        train_fraction=train_fraction,
+        validation_fraction=validation_fraction,
+    )
+    if split_metadata["actual_split_mode"] == "label_stratified_row_fallback":
+        x_train_validation, x_test, y_train_validation, y_test = split_by_label(
+            x_rows,
+            y_rows,
+            test_fraction=1.0 - train_fraction - validation_fraction,
+            seed=seed,
+        )
+        x_train, x_validation, y_train, y_validation = split_by_label(
+            x_train_validation,
+            y_train_validation,
+            test_fraction=validation_fraction / (train_fraction + validation_fraction),
+            seed=seed + 1,
+        )
+        return x_train, x_validation, x_test, y_train, y_validation, y_test, split_metadata
+
+    return (
+        [x_rows[index] for index in train_indices],
+        [x_rows[index] for index in validation_indices],
+        [x_rows[index] for index in test_indices],
+        [y_rows[index] for index in train_indices],
+        [y_rows[index] for index in validation_indices],
+        [y_rows[index] for index in test_indices],
+        split_metadata,
     )
 
 
@@ -139,20 +251,47 @@ def fit_loss_curves(
     return train_loss, validation_loss
 
 
+def evaluation_metrics(y_true: list[str], y_pred: list[str], labels: list[str]) -> dict[str, object]:
+    matrix = confusion_matrix(y_true, y_pred, labels=labels)
+    result: dict[str, object] = {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "classification_report": classification_report(
+            y_true,
+            y_pred,
+            labels=labels,
+            output_dict=True,
+            zero_division=0,
+        ),
+        "confusion_matrix": matrix.tolist(),
+    }
+    if labels == ["abnormal", "normal"]:
+        abnormal_index = labels.index("abnormal")
+        normal_index = labels.index("normal")
+        normal_total = int(matrix[normal_index].sum())
+        abnormal_total = int(matrix[abnormal_index].sum())
+        false_positives = int(matrix[normal_index][abnormal_index])
+        false_negatives = int(matrix[abnormal_index][normal_index])
+        result["false_positive_rate"] = false_positives / normal_total if normal_total else 0.0
+        result["false_negative_rate"] = false_negatives / abnormal_total if abnormal_total else 0.0
+    return result
+
+
 def train_model(
     x_rows: list[list[float]],
     y_rows: list[str],
+    groups: list[str],
     seed: int,
     *,
     target_column: str,
+    split_mode: str,
 ) -> tuple[Pipeline, dict[str, object]]:
     labels = sorted(set(y_rows))
     class_counts = Counter(y_rows)
-    test_fraction = 0.25
-    x_train, x_test, y_train, y_test = split_by_label(
+    x_train, x_validation, x_test, y_train, y_validation, y_test, split_metadata = split_train_validation_test(
         x_rows,
         y_rows,
-        test_fraction=test_fraction,
+        groups,
+        split_mode=split_mode,
         seed=seed,
     )
 
@@ -175,29 +314,33 @@ def train_model(
     )
     model.fit(x_train, y_train)
     train_predictions = model.predict(x_train)
+    validation_predictions = model.predict(x_validation)
     test_predictions = model.predict(x_test)
     mlp = model.named_steps["mlp"]
-    train_loss_curve, validation_loss_curve = fit_loss_curves(x_train, y_train, labels, seed)
+    train_loss_curve, validation_loss_curve = fit_loss_curves(x_train + x_validation, y_train + y_validation, labels, seed)
 
     metrics: dict[str, object] = {
         "target_column": target_column,
+        "split": split_metadata,
         "accuracy": accuracy_score(y_test, test_predictions),
         "train_accuracy": accuracy_score(y_train, train_predictions),
+        "validation_accuracy": accuracy_score(y_validation, validation_predictions),
         "test_accuracy": accuracy_score(y_test, test_predictions),
         "labels": labels,
-        "classification_report": classification_report(
-            y_test,
-            test_predictions,
-            labels=labels,
-            output_dict=True,
-            zero_division=0,
-        ),
-        "confusion_matrix": confusion_matrix(y_test, test_predictions, labels=labels).tolist(),
+        "train_metrics": evaluation_metrics(y_train, train_predictions, labels),
+        "validation_metrics": evaluation_metrics(y_validation, validation_predictions, labels),
+        "test_metrics": evaluation_metrics(y_test, test_predictions, labels),
+        "classification_report": evaluation_metrics(y_test, test_predictions, labels)["classification_report"],
+        "confusion_matrix": evaluation_metrics(y_test, test_predictions, labels)["confusion_matrix"],
         "train_size": len(x_train),
+        "validation_size": len(x_validation),
         "test_size": len(x_test),
-        "test_fraction": test_fraction,
+        "train_fraction": 0.60,
+        "validation_fraction": 0.20,
+        "test_fraction": 0.20,
         "class_counts": dict(class_counts),
         "train_class_counts": dict(Counter(y_train)),
+        "validation_class_counts": dict(Counter(y_validation)),
         "test_class_counts": dict(Counter(y_test)),
         "loss_curve": train_loss_curve,
         "validation_loss_curve": validation_loss_curve,
@@ -213,14 +356,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-output", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--metrics-output", type=Path, default=DEFAULT_METRICS)
     parser.add_argument("--target-column", default=DEFAULT_TARGET_COLUMN)
+    parser.add_argument("--split-mode", choices=["seed", "source"], default="seed")
     parser.add_argument("--seed", type=int, default=3611)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    x_rows, y_rows, feature_names = load_features(args.features, args.target_column)
-    model, metrics = train_model(x_rows, y_rows, seed=args.seed, target_column=args.target_column)
+    x_rows, y_rows, groups, feature_names = load_features(args.features, args.target_column)
+    model, metrics = train_model(
+        x_rows,
+        y_rows,
+        groups,
+        seed=args.seed,
+        target_column=args.target_column,
+        split_mode=args.split_mode,
+    )
 
     args.model_output.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(
@@ -234,8 +385,13 @@ def main() -> None:
 
     print(f"saved model to {args.model_output}")
     print(f"saved metrics to {args.metrics_output}")
-    print(f"train size: {metrics['train_size']} test size: {metrics['test_size']}")
+    print(
+        f"train size: {metrics['train_size']} "
+        f"validation size: {metrics['validation_size']} "
+        f"test size: {metrics['test_size']}"
+    )
     print(f"train accuracy: {metrics['train_accuracy']:.4f}")
+    print(f"validation accuracy: {metrics['validation_accuracy']:.4f}")
     print(f"test accuracy: {metrics['test_accuracy']:.4f}")
 
 

@@ -129,6 +129,27 @@ def _private_ip_pool(size: int) -> list[str]:
     return [_random_private_ip() for _ in range(max(1, size))]
 
 
+def _zipf_weights(size: int, exponent: float = 1.15) -> list[float]:
+    return [1.0 / ((index + 1) ** exponent) for index in range(max(1, size))]
+
+
+def _weighted_choice(items: list[str], weights: list[float]) -> str:
+    if not items:
+        raise ValueError("cannot choose from an empty list")
+    if len(items) != len(weights):
+        raise ValueError("items and weights must have the same length")
+    return random.choices(items, weights=weights, k=1)[0]
+
+
+def _long_tail_client_pool(size: int) -> tuple[list[str], list[float]]:
+    clients = _private_ip_pool(size)
+    return clients, _zipf_weights(len(clients), exponent=1.08)
+
+
+def _long_tail_weights(items: list[str], exponent: float = 1.20) -> list[float]:
+    return _zipf_weights(len(items), exponent=exponent)
+
+
 class _TrafficClock:
     """Generate non-uniform timestamps so synthetic PCAP windows are less idealized."""
 
@@ -275,16 +296,30 @@ def generate_normal_http_pcap(cfg: NormalPcapConfig) -> Path:
             lull_multiplier=cfg.lull_multiplier,
         )
         clients = [f"192.168.{random.randint(1, 40)}.{random.randint(1, 254)}" for _ in range(max(1, cfg.client_pool_size))]
+        client_weights = _long_tail_weights(clients, exponent=1.05)
+        normal_paths = ["/", "/index.html", "/status", "/api/v1/data", "/search?q=test", "/login", "/submit", "/assets/app.css", "/favicon.ico", "/profile"]
+        path_weights = _long_tail_weights(normal_paths, exponent=1.25)
+        normal_user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+            "Mozilla/5.0 (X11; Linux x86_64)",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
+            "curl/7.85.0",
+            "Python/3.11 aiohttp",
+        ]
+        user_agent_weights = _long_tail_weights(normal_user_agents, exponent=1.35)
         for i in range(cfg.session_count):
-            src_ip = random.choice(clients)
+            src_ip = _weighted_choice(clients, client_weights)
             src_port = random.randint(cfg.min_src_port, cfg.max_src_port)
             client_seq = random.randrange(0, 0xFFFFFFFF)
             server_seq = random.randrange(0, 0xFFFFFFFF)
+            path = _weighted_choice(normal_paths, path_weights)
+            user_agent = _weighted_choice(normal_user_agents, user_agent_weights)
 
             request = (
-                f"GET /index.html?item={i % 17} HTTP/1.1\r\n"
+                f"GET {path}?item={i % 17} HTTP/1.1\r\n"
                 f"Host: localhost:{cfg.server_port}\r\n"
-                "User-Agent: benign-client\r\n"
+                f"User-Agent: {user_agent}\r\n"
                 "Accept: */*\r\n\r\n"
             ).encode()
             response = (
@@ -413,9 +448,13 @@ def generate_http_pcap(cfg: HttpPcapConfig) -> Path:
     user_agents = cfg.user_agents or [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+        "Mozilla/5.0 (X11; Linux x86_64)",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
         "curl/7.85.0",
         "Python/3.11 aiohttp",
     ]
+    path_weights = _long_tail_weights(paths, exponent=1.12)
+    user_agent_weights = _long_tail_weights(user_agents, exponent=1.22)
     body_min, body_max = cfg.body_size_range or (0, 0)
     if body_min > body_max:
         body_min, body_max = body_max, body_min
@@ -432,13 +471,13 @@ def generate_http_pcap(cfg: HttpPcapConfig) -> Path:
             lull_probability=cfg.lull_probability,
             lull_multiplier=cfg.lull_multiplier,
         )
-        src_pool = _private_ip_pool(cfg.src_ip_pool_size)
+        src_pool, src_weights = _long_tail_client_pool(cfg.src_ip_pool_size)
         for _ in range(cfg.request_count):
-            src_ip = random.choice(src_pool)
+            src_ip = _weighted_choice(src_pool, src_weights)
             src_port = random.randint(cfg.min_src_port, cfg.max_src_port)
             method = "POST" if random.random() < cfg.post_ratio else "GET"
-            path = random.choice(paths)
-            user_agent = random.choice(user_agents)
+            path = _weighted_choice(paths, path_weights)
+            user_agent = _weighted_choice(user_agents, user_agent_weights)
             body_size = random.randint(body_min, body_max) if body_max > 0 else 0
             body = (b"X" * body_size) if method == "POST" else None
             req_payload = _http_request_payload(path, method, cfg.target_ip, user_agent, body)

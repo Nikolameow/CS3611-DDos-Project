@@ -24,6 +24,7 @@ LABEL_NAMES = {
     "syn_flood": "SYN Flood",
     "http_flood": "HTTP Flood",
     "udp_reflection": "UDP Reflection",
+    "mixed_attack": "Mixed Attack",
     "anomaly": "Anomaly",
 }
 
@@ -158,23 +159,28 @@ def plot_confusion_matrix(metrics: dict, output_dir: Path) -> None:
 def plot_mlp_train_test_split(metrics: dict, output_dir: Path) -> None:
     labels = metrics["labels"]
     train_counts = metrics.get("train_class_counts", {})
+    validation_counts = metrics.get("validation_class_counts", {})
     test_counts = metrics.get("test_class_counts", {})
     names = [LABEL_NAMES.get(label, label) for label in labels]
     train_values = [train_counts.get(label, 0) for label in labels]
+    validation_values = [validation_counts.get(label, 0) for label in labels]
     test_values = [test_counts.get(label, 0) for label in labels]
     x_positions = list(range(len(labels)))
-    width = 0.36
+    width = 0.25
 
     fig, ax = plt.subplots(figsize=(8.8, 4.8))
-    ax.bar([x - width / 2 for x in x_positions], train_values, width=width, color="#4c78a8", label="Train")
-    ax.bar([x + width / 2 for x in x_positions], test_values, width=width, color="#f58518", label="Test")
-    ax.set_title("MLP Train/Test Split by Class")
+    ax.bar([x - width for x in x_positions], train_values, width=width, color="#4c78a8", label="Train")
+    ax.bar(x_positions, validation_values, width=width, color="#54a24b", label="Validation")
+    ax.bar([x + width for x in x_positions], test_values, width=width, color="#f58518", label="Test")
+    ax.set_title("MLP Train/Validation/Test Split by Class")
     ax.set_ylabel("Feature Windows")
     ax.set_xticks(x_positions, names, rotation=20)
     ax.legend()
-    for x, value in zip([x - width / 2 for x in x_positions], train_values):
+    for x, value in zip([x - width for x in x_positions], train_values):
         ax.text(x, value, str(value), ha="center", va="bottom", fontsize=9)
-    for x, value in zip([x + width / 2 for x in x_positions], test_values):
+    for x, value in zip(x_positions, validation_values):
+        ax.text(x, value, str(value), ha="center", va="bottom", fontsize=9)
+    for x, value in zip([x + width for x in x_positions], test_values):
         ax.text(x, value, str(value), ha="center", va="bottom", fontsize=9)
     style_axes(ax)
     save(fig, output_dir / "mlp_train_test_split.png")
@@ -246,7 +252,7 @@ def plot_anomaly_scores(scores: list[dict[str, str]], output_dir: Path) -> None:
         )
     threshold = float(scores[0]["threshold"]) if scores else 0.0
     ax.axhline(threshold, color="#222222", linestyle="--", linewidth=1.4, label="Threshold")
-    ax.set_title("K-Means Anomaly Scores by Window")
+    ax.set_title("K-Means Test Anomaly Scores by Window")
     ax.set_xlabel("Window ID")
     ax.set_ylabel("Anomaly Score (symlog scale)")
     ax.set_yscale("symlog", linthresh=10.0, linscale=0.8)

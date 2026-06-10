@@ -146,9 +146,14 @@ def _random_body(size: int) -> bytes:
     )
 
 
+def _long_tail_choice(items: list[str], exponent: float = 1.15) -> str:
+    weights = [1.0 / ((index + 1) ** exponent) for index in range(len(items))]
+    return random.choices(items, weights=weights, k=1)[0]
+
+
 def _choose_path(cfg: HttpLoadConfig, default_path: str = "/") -> str:
     if cfg.paths:
-        return random.choice(cfg.paths)
+        return _long_tail_choice(cfg.paths, exponent=1.15)
     if cfg.path:
         return cfg.path
     return default_path or "/"
@@ -179,7 +184,7 @@ def _choose_body(cfg: HttpLoadConfig, method: Method) -> bytes | None:
 
 def _choose_user_agent(cfg: HttpLoadConfig) -> str:
     if cfg.user_agents:
-        return random.choice(cfg.user_agents)
+        return _long_tail_choice(cfg.user_agents, exponent=1.25)
     return "attack-sim-local/1.0"
 
 
