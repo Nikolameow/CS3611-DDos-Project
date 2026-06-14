@@ -30,8 +30,15 @@ DEMO_LABELS = DEMO_PCAP.with_suffix(".labels.csv")
 DEMO_FEATURES = DETECTION_DIR / "data" / "demo_features.csv"
 DEMO_CLASSIFIER_LOG = DETECTION_DIR / "data" / "demo_classifier_predictions.csv"
 DEMO_ANOMALY_LOG = DETECTION_DIR / "data" / "demo_anomaly_predictions.csv"
+NGINX_CONFIG = DETECTION_DIR / "data" / "demo_cdn_nginx.conf"
+NGINX_ACCESS_LOG = DETECTION_DIR / "data" / "demo_cdn_access.log"
+NGINX_ERROR_LOG = DETECTION_DIR / "data" / "demo_cdn_error.log"
+NGINX_PID = DETECTION_DIR / "data" / "demo_cdn_nginx.pid"
 VICTIM_IP = "10.0.0.100"
 VICTIM_PORT = 8080
+VICTIM_CDN_BACKUP_PORT = 8081
+CDN_PROXY_IP = "10.0.0.50"
+CDN_PROXY_PORT = 80
 ATTACKER_HTTP_IPS = {"10.0.0.1", "10.0.0.3"}
 ATTACKER_SYN_IP = "10.0.0.2"
 NORMAL_CLIENT_IP = "10.0.0.4"
@@ -53,6 +60,10 @@ class DDoSTopo(Topo):
         # 受害者 = 防御网关（合并节点，所有防御代码都跑在这）
         victim = self.addHost("victim", ip=f"{VICTIM_IP}/24")
         self.addLink(victim, s1)
+
+        # CDN/反向代理边缘节点（--cdn 时启用 Nginx）
+        proxy = self.addHost("proxy", ip=f"{CDN_PROXY_IP}/24")
+        self.addLink(proxy, s1)
 
 
 def _attack_cmd(command: str) -> str:
@@ -129,6 +140,59 @@ def _detection_python() -> str:
     return sys.executable
 
 
+def _write_nginx_config() -> None:
+    NGINX_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    NGINX_CONFIG.write_text(
+        f"""
+worker_processes  1;
+pid {NGINX_PID};
+
+events {{
+    worker_connections  1024;
+}}
+
+http {{
+    access_log {NGINX_ACCESS_LOG};
+    error_log {NGINX_ERROR_LOG} info;
+
+    limit_req_zone $binary_remote_addr zone=per_client_req:10m rate=80r/s;
+    limit_conn_zone $binary_remote_addr zone=per_client_conn:10m;
+
+    upstream ddos_origin {{
+        server {VICTIM_IP}:{VICTIM_PORT};
+        server {VICTIM_IP}:{VICTIM_CDN_BACKUP_PORT};
+    }}
+
+    server {{
+        listen {CDN_PROXY_PORT};
+        server_name _;
+
+        limit_req zone=per_client_req burst=80 nodelay;
+        limit_conn per_client_conn 40;
+
+        location / {{
+            proxy_pass http://ddos_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }}
+    }}
+}}
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+
+def _protect_origin_from_direct_clients(victim) -> None:
+    commands = [
+        f"iptables -I INPUT -p tcp --dport {VICTIM_PORT} ! -s {CDN_PROXY_IP} -j DROP",
+        f"iptables -I INPUT -p tcp --dport {VICTIM_CDN_BACKUP_PORT} ! -s {CDN_PROXY_IP} -j DROP",
+    ]
+    _run_host_command(victim, "origin-guard", " && ".join(commands))
+
+
 def _demo_label_for_packet(packet) -> str:
     endpoints = {packet.src_ip, packet.dst_ip}
     if NORMAL_CLIENT_IP in endpoints:
@@ -137,7 +201,7 @@ def _demo_label_for_packet(packet) -> str:
         return "syn_flood"
     if endpoints & ATTACKER_HTTP_IPS:
         return "http_flood"
-    if packet.dst_ip == VICTIM_IP and packet.protocol == "TCP" and packet.syn and not packet.ack:
+    if packet.dst_ip in {VICTIM_IP, CDN_PROXY_IP} and packet.protocol == "TCP" and packet.syn and not packet.ack:
         return "syn_flood"
     if VICTIM_IP in endpoints:
         return "http_flood"
@@ -272,68 +336,111 @@ def _run_detection() -> None:
     print(f"[*] 异常预测: {DEMO_ANOMALY_LOG}")
 
 
-def run_demo(duration: float, rate: float, use_nft: bool, live_ml: str) -> None:
+def run_demo(duration: float, rate: float, use_nft: bool, live_ml: str, use_cdn: bool) -> None:
     setLogLevel("info")
     net = Mininet(topo=DDoSTopo(), switch=OVSBridge, controller=None)
-    server_proc = None
+    server_procs = []
+    cdn_proc = None
     capture_proc = None
     live_block_proc = None
     live_ml_block_proc = None
     net.start()
 
     try:
-        h1, h2, h3, h4, victim = [net.get(name) for name in ("h1", "h2", "h3", "h4", "victim")]
+        h1, h2, h3, h4, victim, proxy = [net.get(name) for name in ("h1", "h2", "h3", "h4", "victim", "proxy")]
         DETECTION_DIR.joinpath("data").mkdir(parents=True, exist_ok=True)
         DEMO_PCAP.unlink(missing_ok=True)
         DEMO_LABELS.unlink(missing_ok=True)
+        for nginx_path in (NGINX_CONFIG, NGINX_ACCESS_LOG, NGINX_ERROR_LOG, NGINX_PID):
+            nginx_path.unlink(missing_ok=True)
 
         print("\n[*] 拓扑就绪，开始一键攻防演示")
         _run_host_command(victim, "victim", f"ip addr show victim-eth0 | grep 'inet '")
-        if _host_has_command(victim, "iptables"):
-            _run_host_command(victim, "defense", _root_cmd(f"defense/defense_main.py rules --mode rate-limit --port {VICTIM_PORT} --rate 80 --burst 80 --apply"))
-        else:
-            print("[!] victim namespace 内找不到 iptables，跳过防火墙限速和自动封禁")
-        if use_nft and _host_has_command(victim, "nft"):
-            _run_host_command(victim, "defense-nft", _root_cmd(f"defense/defense_main.py rules --mode nft-http --port {VICTIM_PORT} --rate 80 --apply || true"))
-        elif use_nft:
-            print("[!] victim namespace 内找不到 nft，跳过 nftables 清洗规则")
 
-        server_proc = _start_host_process(
+        server_procs.append(_start_host_process(
             victim,
             "victim-http",
             _attack_cmd(f"demo-server --host 0.0.0.0 --port {VICTIM_PORT}"),
-        )
+        ))
+        cdn_enabled = False
+        if use_cdn:
+            server_procs.append(_start_host_process(
+                victim,
+                "victim-http-backup",
+                _attack_cmd(f"demo-server --host 0.0.0.0 --port {VICTIM_CDN_BACKUP_PORT}"),
+            ))
+            if _host_has_command(proxy, "nginx"):
+                _write_nginx_config()
+                cdn_proc = _start_host_process(
+                    proxy,
+                    "cdn-nginx",
+                    f"nginx -c {NGINX_CONFIG} -g 'daemon off;'",
+                )
+                time.sleep(0.5)
+                if cdn_proc.poll() is None:
+                    cdn_enabled = True
+                    _run_host_command(proxy, "proxy", f"ip addr show proxy-eth0 | grep 'inet '")
+                    print(f"[*] CDN/Nginx 启用: http://{CDN_PROXY_IP}:{CDN_PROXY_PORT}/ -> {VICTIM_IP}:{VICTIM_PORT},{VICTIM_CDN_BACKUP_PORT}")
+                    if _host_has_command(victim, "iptables"):
+                        _protect_origin_from_direct_clients(victim)
+                else:
+                    print("[!] Nginx 启动失败，回退为直接访问 victim")
+            else:
+                print("[!] proxy namespace 内找不到 nginx，回退为直接访问 victim")
+
+        defense_host = proxy if cdn_enabled else victim
+        defense_port = CDN_PROXY_PORT if cdn_enabled else VICTIM_PORT
+        defense_interface = "proxy-eth0" if cdn_enabled else "victim-eth0"
+        if _host_has_command(defense_host, "iptables"):
+            _run_host_command(
+                defense_host,
+                "defense",
+                _root_cmd(f"defense/defense_main.py rules --mode rate-limit --port {defense_port} --rate 80 --burst 80 --apply"),
+            )
+        else:
+            print("[!] 防御节点 namespace 内找不到 iptables，跳过防火墙限速和自动封禁")
+        if use_nft and _host_has_command(defense_host, "nft"):
+            _run_host_command(
+                defense_host,
+                "defense-nft",
+                _root_cmd(f"defense/defense_main.py rules --mode nft-http --port {defense_port} --rate 80 --apply || true"),
+            )
+        elif use_nft:
+            print("[!] 防御节点 namespace 内找不到 nft，跳过 nftables 清洗规则")
+
         time.sleep(1.0)
 
-        if _host_has_command(victim, "tcpdump"):
+        if _host_has_command(defense_host, "tcpdump"):
             capture_proc = _start_host_process(
-                victim,
+                defense_host,
                 "tcpdump",
-                f"tcpdump -i victim-eth0 -w {DEMO_PCAP} tcp port {VICTIM_PORT}",
+                f"tcpdump -i {defense_interface} -w {DEMO_PCAP} tcp port {defense_port}",
             )
-            if _host_has_command(victim, "iptables"):
+            if _host_has_command(defense_host, "iptables"):
                 live_block_proc = _start_host_process(
-                    victim,
+                    defense_host,
                     "live-block",
-                    _root_cmd(f"defense/defense_main.py live-block --interface victim-eth0 --port {VICTIM_PORT} --threshold 250 --window 3 --apply"),
+                    _root_cmd(f"defense/defense_main.py live-block --interface {defense_interface} --port {defense_port} --threshold 250 --window 3 --apply"),
                 )
                 if live_ml != "none":
                     live_ml_block_proc = _start_host_process(
-                        victim,
+                        defense_host,
                         "live-ml-block",
                         _root_cmd(
                             "defense/defense_main.py "
-                            f"live-ml-block --detector {live_ml} --interface victim-eth0 "
-                            f"--port {VICTIM_PORT} --window 1 --min-packets 5 --apply"
+                            f"live-ml-block --detector {live_ml} --interface {defense_interface} "
+                            f"--port {defense_port} --window 1 --min-packets 5 --apply"
                         ),
                     )
             else:
                 print("[!] 缺少 iptables，实时统计封禁只可在安装后演示")
             time.sleep(1.0)
         else:
-            print("[!] victim namespace 内找不到 tcpdump，跳过抓包和后续模型检测")
+            print("[!] 防御节点 namespace 内找不到 tcpdump，跳过抓包和后续模型检测")
 
-        target_url = f"http://{VICTIM_IP}:{VICTIM_PORT}/"
+        target_host = CDN_PROXY_IP if cdn_enabled else VICTIM_IP
+        target_port = CDN_PROXY_PORT if cdn_enabled else VICTIM_PORT
+        target_url = f"http://{target_host}:{target_port}/"
         procs = [
             _start_host_process(
                 h1,
@@ -343,7 +450,7 @@ def run_demo(duration: float, rate: float, use_nft: bool, live_ml: str) -> None:
             _start_host_process(
                 h2,
                 "h2-raw-syn-flood",
-                _attack_cmd(f"raw-syn --target {VICTIM_IP} --port {VICTIM_PORT} --duration {duration} --rate {rate * 8} || python3 -m attack_sim syn --host {VICTIM_IP} --port {VICTIM_PORT} --duration {duration} --concurrency 120 --rate {rate * 2}"),
+                _attack_cmd(f"raw-syn --target {target_host} --port {target_port} --duration {duration} --rate {rate * 8} || python3 -m attack_sim syn --host {target_host} --port {target_port} --duration {duration} --concurrency 120 --rate {rate * 2}"),
             ),
             _start_host_process(
                 h3,
@@ -376,8 +483,10 @@ def run_demo(duration: float, rate: float, use_nft: bool, live_ml: str) -> None:
             _stop_process(live_block_proc, "live-block")
         if capture_proc is not None:
             _stop_process(capture_proc, "tcpdump")
-        if server_proc is not None:
-            _stop_process(server_proc, "victim-http")
+        if cdn_proc is not None:
+            _stop_process(cdn_proc, "cdn-nginx")
+        for index, server_proc in enumerate(server_procs):
+            _stop_process(server_proc, f"victim-http-{index}")
         net.stop()
 
 
@@ -387,7 +496,8 @@ def run_cli() -> None:
     net.start()
     print(f"\n[*] 拓扑就绪。项目根目录 = {PROJECT_ROOT}")
     print("[*] 可运行: sudo python3 topology/topo.py --demo")
-    print("[*] 或在 CLI 中运行 'xterm victim h1 h2 h3 h4' 手动演示\n")
+    print("[*] CDN 演示: sudo python3 topology/topo.py --demo --cdn")
+    print("[*] 或在 CLI 中运行 'xterm victim proxy h1 h2 h3 h4' 手动演示\n")
     try:
         CLI(net)
     finally:
@@ -402,6 +512,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rate", type=float, default=120.0, help="Base attack request/connection rate for demo mode")
     parser.add_argument("--nft", action="store_true", help="Also try nftables HTTP filtering in demo mode")
     parser.add_argument("--live-ml", choices=["none", "mlp", "kmeans"], default="none", help="Also run live ML blocking during demo mode")
+    parser.add_argument("--cdn", action="store_true", help="Run clients through an Nginx reverse-proxy/CDN edge node")
     return parser.parse_args()
 
 
@@ -410,7 +521,7 @@ def main() -> None:
     if args.cli:
         run_cli()
     else:
-        run_demo(duration=args.duration, rate=args.rate, use_nft=args.nft, live_ml=args.live_ml)
+        run_demo(duration=args.duration, rate=args.rate, use_nft=args.nft, live_ml=args.live_ml, use_cdn=args.cdn)
 
 
 if __name__ == "__main__":

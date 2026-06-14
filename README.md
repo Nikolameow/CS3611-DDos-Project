@@ -24,6 +24,7 @@ python3 -m pip install -r requirements.txt
 - `iptables`：TCP 端口限速与黑名单。
 - `nft`：nftables HTTP 端口过滤，可选。
 - `tcpdump`：自动演示抓包与实时统计封禁，可选但推荐。
+- `nginx`：CDN/反向代理演示需要，用于请求分发、边缘限速和源站隐藏。
 
 ## 一键攻防演示
 
@@ -52,7 +53,29 @@ sudo python3 topology/topo.py --demo --duration 12 --rate 180
 sudo python3 topology/topo.py --demo --nft
 sudo python3 topology/topo.py --demo --live-ml mlp
 sudo python3 topology/topo.py --demo --live-ml kmeans
+sudo python3 topology/topo.py --demo --cdn
+sudo python3 topology/topo.py --demo --cdn --live-ml mlp
 ```
+
+## CDN / Nginx 反向代理
+
+开启 `--cdn` 后，拓扑会额外启用 `proxy` 节点作为 CDN 边缘代理：
+
+- `proxy` 地址为 `10.0.0.50`，Nginx 监听 `80` 端口。
+- `victim` 源站继续运行后端服务，并额外启动一个备份后端，分别监听 `8080` 和 `8081`。
+- Nginx `upstream ddos_origin` 将请求分发到 `10.0.0.100:8080` 和 `10.0.0.100:8081`。
+- 攻击者和正常用户访问 `http://10.0.0.50/`，不再直接访问 `10.0.0.100:8080`。
+- `victim` 通过 iptables 拒绝非 `10.0.0.50` 来源访问后端端口，实现源站隐藏。
+- Nginx 配置 `limit_req` 与 `limit_conn`，在边缘侧按客户端 IP 做请求速率和连接数限制。
+- 抓包和实时检测切换到 `proxy-eth0:80`，因此仍能按原始客户端 IP 区分 `h1/h3` 攻击流量和 `h4` 正常流量。
+
+CDN 演示会生成以下辅助文件：
+
+- `detection/data/demo_cdn_nginx.conf`
+- `detection/data/demo_cdn_access.log`
+- `detection/data/demo_cdn_error.log`
+
+如果实验环境缺少 `nginx`，脚本会提示并回退为直接访问 `victim` 的普通攻防演示。
 
 如果只想进入 Mininet CLI 手动实验：
 
@@ -142,6 +165,7 @@ python3 -m detection.predict_anomaly
 一键演示产生的检测文件：
 
 - `detection/data/demo_http_flood.pcap`
+- `detection/data/demo_http_flood.labels.csv`
 - `detection/data/demo_features.csv`
 - `detection/data/demo_classifier_predictions.csv`
 - `detection/data/demo_anomaly_predictions.csv`
@@ -152,5 +176,6 @@ python3 -m detection.predict_anomaly
 
 1. 基础防御闭环：`topology/topo.py` 在 victim 上应用 iptables/nftables 规则，攻击流量经过 victim namespace 时被限速或过滤。
 2. 智能检测闭环：演示结束后对本次 PCAP 做特征提取和模型推理，输出攻击类型与异常状态，并可通过 `ml-block` 联动 iptables 黑名单。
+3. CDN 防护闭环：`--cdn` 模式下流量先进入 Nginx 边缘节点，Nginx 负责请求分发和边缘限速，源站只接受代理访问。
 
 默认不加 `--apply` 时所有防火墙动作都是 dry-run；真实阻断由 iptables/nftables、日志自动封禁、实时接口统计封禁和 ML 联动封禁负责。

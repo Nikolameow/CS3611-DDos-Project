@@ -11,3 +11,8 @@
 iptables 命令封禁该源 IP，实现从检测到阻断的运维自动化闭环；
 CDN 集成（15 分）
 ：配置 Nginx 反向代理实现请求分发与源 IP 隐藏；
+
+当前实现：`sudo python3 topology/topo.py --demo --cdn` 会创建 `proxy`
+节点并启动 Nginx。攻击者和正常用户访问 `10.0.0.50:80`，Nginx
+通过 upstream 将请求分发到 `victim` 的 `8080/8081` 两个后端端口；
+`victim` 使用 iptables 只允许 `10.0.0.50` 访问源站端口，从而隐藏源站。
