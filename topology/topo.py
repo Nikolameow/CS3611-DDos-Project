@@ -193,12 +193,13 @@ def _run_detection() -> None:
     print(f"[*] 异常预测: {DEMO_ANOMALY_LOG}")
 
 
-def run_demo(duration: float, rate: float, use_nft: bool) -> None:
+def run_demo(duration: float, rate: float, use_nft: bool, live_ml: str) -> None:
     setLogLevel("info")
     net = Mininet(topo=DDoSTopo(), switch=OVSBridge, controller=None)
     server_proc = None
     capture_proc = None
     live_block_proc = None
+    live_ml_block_proc = None
     net.start()
 
     try:
@@ -236,6 +237,16 @@ def run_demo(duration: float, rate: float, use_nft: bool) -> None:
                     "live-block",
                     _root_cmd(f"defense/defense_main.py live-block --interface victim-eth0 --port {VICTIM_PORT} --threshold 250 --window 3 --apply"),
                 )
+                if live_ml != "none":
+                    live_ml_block_proc = _start_host_process(
+                        victim,
+                        "live-ml-block",
+                        _root_cmd(
+                            "defense/defense_main.py "
+                            f"live-ml-block --detector {live_ml} --interface victim-eth0 "
+                            f"--port {VICTIM_PORT} --window 1 --min-packets 5 --apply"
+                        ),
+                    )
             else:
                 print("[!] 缺少 iptables，实时统计封禁只可在安装后演示")
             time.sleep(1.0)
@@ -270,12 +281,16 @@ def run_demo(duration: float, rate: float, use_nft: bool) -> None:
             proc.wait()
 
         time.sleep(1.0)
+        if live_ml_block_proc is not None:
+            _stop_process(live_ml_block_proc, "live-ml-block")
         if live_block_proc is not None:
             _stop_process(live_block_proc, "live-block")
         if capture_proc is not None:
             _stop_process(capture_proc, "tcpdump")
         _run_detection()
     finally:
+        if live_ml_block_proc is not None:
+            _stop_process(live_ml_block_proc, "live-ml-block")
         if live_block_proc is not None:
             _stop_process(live_block_proc, "live-block")
         if capture_proc is not None:
@@ -305,6 +320,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duration", type=float, default=8.0, help="Traffic duration in seconds for demo mode")
     parser.add_argument("--rate", type=float, default=120.0, help="Base attack request/connection rate for demo mode")
     parser.add_argument("--nft", action="store_true", help="Also try nftables HTTP filtering in demo mode")
+    parser.add_argument("--live-ml", choices=["none", "mlp", "kmeans"], default="none", help="Also run live ML blocking during demo mode")
     return parser.parse_args()
 
 
@@ -313,7 +329,7 @@ def main() -> None:
     if args.cli:
         run_cli()
     else:
-        run_demo(duration=args.duration, rate=args.rate, use_nft=args.nft)
+        run_demo(duration=args.duration, rate=args.rate, use_nft=args.nft, live_ml=args.live_ml)
 
 
 if __name__ == "__main__":

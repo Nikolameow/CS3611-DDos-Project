@@ -21,6 +21,8 @@ from attack_sim.defense import (
     build_nft_http_port_filter,
 )
 from attack_sim.live_block import LiveBlockConfig, LiveBlocker
+from attack_sim.live_ml_block import LiveMlBlockConfig, LiveMlBlocker
+from attack_sim.ml_block import MlBlockConfig, parse_whitelist, run_ml_block
 
 
 def build_demo_rules(port: int, rate: float, burst: int) -> list[str]:
@@ -81,6 +83,47 @@ def _cmd_live_block(args: argparse.Namespace) -> int:
     return 0
 
 
+def _model_path_for_detector(detector: str, model: Path | None) -> Path:
+    if model is not None:
+        return model
+    if detector == "kmeans":
+        return Path("detection/models/kmeans_anomaly.joblib")
+    return Path("detection/models/ddos_mlp.joblib")
+
+
+def _cmd_ml_block(args: argparse.Namespace) -> int:
+    cfg = MlBlockConfig(
+        detector=args.detector,
+        model_path=_model_path_for_detector(args.detector, args.model),
+        features_path=args.features,
+        ip=args.ip,
+        min_bad_windows=args.min_bad_windows,
+        whitelist=parse_whitelist(args.whitelist),
+        dry_run=not args.apply,
+    )
+    run_ml_block(cfg)
+    return 0
+
+
+def _cmd_live_ml_block(args: argparse.Namespace) -> int:
+    cfg = LiveMlBlockConfig(
+        detector=args.detector,
+        model_path=_model_path_for_detector(args.detector, args.model),
+        interface=args.interface,
+        port=args.port,
+        window_s=args.window,
+        min_bad_windows=args.min_bad_windows,
+        min_packets=args.min_packets,
+        whitelist=parse_whitelist(args.whitelist),
+        dry_run=not args.apply,
+    )
+    try:
+        LiveMlBlocker(cfg).run()
+    except KeyboardInterrupt:
+        print("Live ML block monitor stopped")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DDoS defense rule manager for the lab topology.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -108,6 +151,31 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--window", type=int, default=60)
     live.add_argument("--apply", action="store_true", help="Actually apply blacklist rules")
     live.set_defaults(fn=_cmd_live_block)
+
+    ml = sub.add_parser("ml-block", help="Use a trained ML detector to decide whether to blacklist a source IP")
+    ml.add_argument("--detector", choices=["mlp", "kmeans"], default="mlp")
+    ml.add_argument("--features", type=Path, default=Path("detection/data/features.csv"))
+    ml.add_argument("--model", type=Path, default=None)
+    ml.add_argument("--ip", required=True, help="Source IP to blacklist when ML detection crosses the threshold")
+    ml.add_argument("--min-bad-windows", type=int, default=1)
+    ml.add_argument("--whitelist", default="", help="Comma-separated source IPs that must never be blacklisted")
+    ml.add_argument("--apply", action="store_true", help="Actually apply blacklist rules")
+    ml.set_defaults(fn=_cmd_ml_block)
+
+    live_ml = sub.add_parser(
+        "live-ml-block",
+        help="Monitor tcpdump traffic, classify per-source windows with ML, and blacklist attack sources",
+    )
+    live_ml.add_argument("--detector", choices=["mlp", "kmeans"], default="mlp")
+    live_ml.add_argument("--model", type=Path, default=None)
+    live_ml.add_argument("--interface", required=True)
+    live_ml.add_argument("--port", type=int, default=8080)
+    live_ml.add_argument("--window", type=float, default=1.0)
+    live_ml.add_argument("--min-bad-windows", type=int, default=1)
+    live_ml.add_argument("--min-packets", type=int, default=1)
+    live_ml.add_argument("--whitelist", default="", help="Comma-separated source IPs that must never be blacklisted")
+    live_ml.add_argument("--apply", action="store_true", help="Actually apply blacklist rules")
+    live_ml.set_defaults(fn=_cmd_live_ml_block)
 
     return parser
 

@@ -50,6 +50,8 @@ sudo python3 topology/topo.py --demo
 ```bash
 sudo python3 topology/topo.py --demo --duration 12 --rate 180
 sudo python3 topology/topo.py --demo --nft
+sudo python3 topology/topo.py --demo --live-ml mlp
+sudo python3 topology/topo.py --demo --live-ml kmeans
 ```
 
 如果只想进入 Mininet CLI 手动实验：
@@ -105,6 +107,24 @@ sudo python3 defense/defense_main.py live-block --interface victim-eth0 --port 8
 
 该命令通过 `tcpdump` 监控接口流量，按源 IP 在滑动窗口内统计访问目标端口的次数，超过阈值后调用 iptables 黑名单。
 
+ML 联动封禁示例：
+
+```bash
+python3 defense/defense_main.py ml-block --detector mlp --features detection/data/features.csv --ip 10.0.0.3
+python3 defense/defense_main.py ml-block --detector kmeans --features detection/data/features.csv --ip 10.0.0.3 --min-bad-windows 3
+```
+
+`ml-block` 默认只打印检测结果和拟执行的 iptables 黑名单命令；加 `--apply` 后才会真正封禁。由于当前窗口特征不保留单个攻击源 IP，第一版需要通过 `--ip` 显式指定模型判定异常后要封禁的源地址，可用 `--whitelist` 避免误封关键地址。
+
+实时 ML 封禁示例：
+
+```bash
+sudo python3 defense/defense_main.py live-ml-block --detector mlp --interface victim-eth0 --port 8080 --window 1 --min-packets 5 --apply
+sudo python3 defense/defense_main.py live-ml-block --detector kmeans --interface victim-eth0 --port 8080 --window 1 --min-packets 5 --min-bad-windows 2 --apply
+```
+
+`live-ml-block` 通过 `tcpdump` 实时读取指定接口流量，按源 IP 聚合时间窗口，生成与训练模型对齐的基础统计特征，再用 MLP 或 K-Means 判定该源 IP 是否异常；达到阈值后调用 iptables 封禁该源 IP。
+
 ## 检测模块
 
 离线检测流程：
@@ -131,6 +151,6 @@ python3 -m detection.predict_anomaly
 当前闭环分为两层：
 
 1. 基础防御闭环：`topology/topo.py` 在 victim 上应用 iptables/nftables 规则，攻击流量经过 victim namespace 时被限速或过滤。
-2. 智能检测闭环：演示结束后对本次 PCAP 做特征提取和模型推理，输出攻击类型与异常状态，用于报告和后续自动化响应扩展。
+2. 智能检测闭环：演示结束后对本次 PCAP 做特征提取和模型推理，输出攻击类型与异常状态，并可通过 `ml-block` 联动 iptables 黑名单。
 
-模型预测结果目前不会自动修改防火墙规则；实际阻断由 iptables/nftables、日志自动封禁和实时接口统计封禁负责。
+默认不加 `--apply` 时所有防火墙动作都是 dry-run；真实阻断由 iptables/nftables、日志自动封禁、实时接口统计封禁和 ML 联动封禁负责。
