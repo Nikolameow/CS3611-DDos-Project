@@ -8,7 +8,7 @@ import csv
 import hashlib
 import math
 import struct
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean, pstdev
@@ -394,6 +394,7 @@ def extract_features(
     packets_per_window: int | None,
     http_ports: set[int],
     skip_duplicates: bool,
+    group_by_origin_label: bool,
 ) -> list[dict[str, float | int | str]]:
     pcaps = sorted(input_dir.glob("*.pcap"))
     if not pcaps:
@@ -411,24 +412,37 @@ def extract_features(
             seen_digests.add(digest)
 
         packets = read_pcap_packets(pcap)
-        label = label_from_pcap(pcap)
-        for window in iter_windows(
-            packets,
-            window_seconds=window_seconds,
-            packets_per_window=packets_per_window,
-        ):
-            duration_floor = window_seconds if packets_per_window is None else 1e-9
-            rows.append(
-                extract_window_features(
-                    next_window_id,
-                    pcap.name,
-                    label,
-                    window,
-                    http_ports,
-                    duration_floor_s=duration_floor,
+        default_label = label_from_pcap(pcap)
+        packet_groups: list[tuple[str, str, list[PacketFeature]]]
+        if group_by_origin_label and any(packet.origin_label for packet in packets):
+            grouped_packets: dict[str, list[PacketFeature]] = defaultdict(list)
+            for packet in packets:
+                grouped_packets[packet.origin_label or default_label].append(packet)
+            packet_groups = [
+                (f"{pcap.name}#{label}", label, grouped_packets[label])
+                for label in sorted(grouped_packets)
+            ]
+        else:
+            packet_groups = [(pcap.name, default_label, packets)]
+
+        for source_name, label, group_packets in packet_groups:
+            for window in iter_windows(
+                group_packets,
+                window_seconds=window_seconds,
+                packets_per_window=packets_per_window,
+            ):
+                duration_floor = window_seconds if packets_per_window is None else 1e-9
+                rows.append(
+                    extract_window_features(
+                        next_window_id,
+                        source_name,
+                        label,
+                        window,
+                        http_ports,
+                        duration_floor_s=duration_floor,
+                    )
                 )
-            )
-            next_window_id += 1
+                next_window_id += 1
     return rows
 
 
@@ -448,6 +462,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--packets-per-window", type=int, default=None)
     parser.add_argument("--http-ports", default="80,443,8080")
     parser.add_argument("--include-duplicates", action="store_true")
+    parser.add_argument(
+        "--group-by-origin-label",
+        action="store_true",
+        help="Split a labelled mixed PCAP into separate windows per packet label.",
+    )
     return parser.parse_args()
 
 
@@ -460,6 +479,7 @@ def main() -> None:
         packets_per_window=args.packets_per_window,
         http_ports=http_ports,
         skip_duplicates=not args.include_duplicates,
+        group_by_origin_label=args.group_by_origin_label,
     )
     write_features(rows, args.output)
     print(f"wrote {len(rows)} feature rows to {args.output}")

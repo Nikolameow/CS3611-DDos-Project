@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -19,14 +21,20 @@ from mininet.topo import Topo
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 ATTACK1_DIR = PROJECT_ROOT / "attack1"
 DETECTION_DIR = PROJECT_ROOT / "detection"
 DEMO_PCAP = DETECTION_DIR / "data" / "demo_http_flood.pcap"
+DEMO_LABELS = DEMO_PCAP.with_suffix(".labels.csv")
 DEMO_FEATURES = DETECTION_DIR / "data" / "demo_features.csv"
 DEMO_CLASSIFIER_LOG = DETECTION_DIR / "data" / "demo_classifier_predictions.csv"
 DEMO_ANOMALY_LOG = DETECTION_DIR / "data" / "demo_anomaly_predictions.csv"
 VICTIM_IP = "10.0.0.100"
 VICTIM_PORT = 8080
+ATTACKER_HTTP_IPS = {"10.0.0.1", "10.0.0.3"}
+ATTACKER_SYN_IP = "10.0.0.2"
+NORMAL_CLIENT_IP = "10.0.0.4"
 
 
 class DDoSTopo(Topo):
@@ -121,6 +129,74 @@ def _detection_python() -> str:
     return sys.executable
 
 
+def _demo_label_for_packet(packet) -> str:
+    endpoints = {packet.src_ip, packet.dst_ip}
+    if NORMAL_CLIENT_IP in endpoints:
+        return "normal"
+    if ATTACKER_SYN_IP in endpoints:
+        return "syn_flood"
+    if endpoints & ATTACKER_HTTP_IPS:
+        return "http_flood"
+    if packet.dst_ip == VICTIM_IP and packet.protocol == "TCP" and packet.syn and not packet.ack:
+        return "syn_flood"
+    if VICTIM_IP in endpoints:
+        return "http_flood"
+    return "attack"
+
+
+def _write_demo_packet_labels() -> None:
+    if not DEMO_PCAP.exists() or DEMO_PCAP.stat().st_size == 0:
+        return
+
+    try:
+        from detection.features import _parse_ipv4_packet, _pcap_endian
+    except ImportError as exc:
+        print(f"[!] 无法导入逐包标签工具，跳过 demo 标签生成: {exc}")
+        return
+
+    labels_written = 0
+    with DEMO_PCAP.open("rb") as pcap_file, DEMO_LABELS.open("w", newline="", encoding="utf-8") as label_file:
+        header = pcap_file.read(24)
+        if len(header) != 24:
+            print(f"[!] PCAP 文件不完整，跳过标签生成: {DEMO_PCAP}")
+            return
+        endian = _pcap_endian(header[:4])
+        _, _, _, _, _, _, linktype = struct.unpack(f"{endian}IHHIIII", header)
+
+        writer = csv.DictWriter(
+            label_file,
+            fieldnames=["packet_index", "label", "src_ip", "dst_ip", "protocol"],
+        )
+        writer.writeheader()
+        packet_index = 0
+        while True:
+            packet_header = pcap_file.read(16)
+            if not packet_header:
+                break
+            if len(packet_header) != 16:
+                print(f"[!] PCAP packet header 截断，停止标签生成: {DEMO_PCAP}")
+                break
+            ts_sec, ts_frac, incl_len, _orig_len = struct.unpack(f"{endian}IIII", packet_header)
+            frame = pcap_file.read(incl_len)
+            if len(frame) != incl_len:
+                print(f"[!] PCAP packet body 截断，停止标签生成: {DEMO_PCAP}")
+                break
+            packet = _parse_ipv4_packet(ts_sec + ts_frac / 1_000_000, frame, linktype)
+            if packet is not None:
+                writer.writerow(
+                    {
+                        "packet_index": packet_index,
+                        "label": _demo_label_for_packet(packet),
+                        "src_ip": packet.src_ip,
+                        "dst_ip": packet.dst_ip,
+                        "protocol": packet.protocol,
+                    }
+                )
+                labels_written += 1
+            packet_index += 1
+    print(f"[*] demo 逐包标签: {DEMO_LABELS} ({labels_written} packets)")
+
+
 def _run_detection() -> None:
     if not DEMO_PCAP.exists() or DEMO_PCAP.stat().st_size == 0:
         print(f"[!] 未生成有效 PCAP，跳过检测: {DEMO_PCAP}")
@@ -141,6 +217,7 @@ def _run_detection() -> None:
             str(DEMO_FEATURES),
             "--window-seconds",
             "0.05",
+            "--group-by-origin-label",
         ],
         [
             detection_python,
@@ -148,6 +225,7 @@ def _run_detection() -> None:
             "detection.predict_classifier",
             "--features",
             str(DEMO_FEATURES),
+            "--allow-low-rate-benign",
         ],
         [
             detection_python,
@@ -155,6 +233,7 @@ def _run_detection() -> None:
             "detection.predict_anomaly",
             "--features",
             str(DEMO_FEATURES),
+            "--allow-low-rate-benign",
         ],
     ]
 
@@ -206,6 +285,7 @@ def run_demo(duration: float, rate: float, use_nft: bool, live_ml: str) -> None:
         h1, h2, h3, h4, victim = [net.get(name) for name in ("h1", "h2", "h3", "h4", "victim")]
         DETECTION_DIR.joinpath("data").mkdir(parents=True, exist_ok=True)
         DEMO_PCAP.unlink(missing_ok=True)
+        DEMO_LABELS.unlink(missing_ok=True)
 
         print("\n[*] 拓扑就绪，开始一键攻防演示")
         _run_host_command(victim, "victim", f"ip addr show victim-eth0 | grep 'inet '")
@@ -287,6 +367,7 @@ def run_demo(duration: float, rate: float, use_nft: bool, live_ml: str) -> None:
             _stop_process(live_block_proc, "live-block")
         if capture_proc is not None:
             _stop_process(capture_proc, "tcpdump")
+            _write_demo_packet_labels()
         _run_detection()
     finally:
         if live_ml_block_proc is not None:
